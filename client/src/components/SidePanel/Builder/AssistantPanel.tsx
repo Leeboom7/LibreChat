@@ -1,10 +1,13 @@
 import { useState, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import { Spinner, useToastContext, SelectDropDown } from '@librechat/client';
+import { request } from 'librechat-data-provider';
 import { useForm, FormProvider, Controller, useWatch } from 'react-hook-form';
 import {
   Tools,
   Capabilities,
+  SystemRoles,
   actionDelimiter,
   ImageVisionTool,
   defaultAssistantFormValues,
@@ -16,6 +19,7 @@ import {
   useUpdateAssistantMutation,
   useAvailableAgentToolsQuery,
 } from '~/data-provider';
+import { useAuthContext } from '~/hooks';
 import { cn, cardStyle, defaultTextProps, removeFocusOutlines } from '~/utils';
 import AssistantConversationStarters from './AssistantConversationStarters';
 import AssistantToolsDialog from '~/components/Tools/AssistantToolsDialog';
@@ -28,6 +32,7 @@ import AssistantSelect from './AssistantSelect';
 import ContextButton from './ContextButton';
 import AssistantTool from './AssistantTool';
 import Knowledge from './Knowledge';
+import DataSources from './DataSources';
 import { Panel } from '~/common';
 import Action from './Action';
 
@@ -52,6 +57,18 @@ export default function AssistantPanel({
 }: AssistantPanelProps & { assistantsConfig?: TConfig | null }) {
   const modelsQuery = useGetModelsQuery();
   const assistantMap = useAssistantsMapContext();
+  const { user } = useAuthContext();
+  const isAdmin = user?.role === SystemRoles.ADMIN;
+
+  // 获取分组列表（仅 ADMIN 用户需要）
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore - request.get 的泛型在编译后的 dist 类型不一致
+  const { data: groupsData } = useQuery<{ groups: Array<{ name: string }>; systemRoles: string[] }>({
+    queryKey: ['adminGroups'],
+    queryFn: () => request.get('/api/admin/groups') as Promise<{ groups: Array<{ name: string }>; systemRoles: string[] }>,
+    enabled: isAdmin,
+    staleTime: 60_000,
+  });
 
   const { data: allTools = [] } = useAvailableAgentToolsQuery();
   const { onSelect: onSelectAssistant } = useSelectAssistant(endpoint);
@@ -112,19 +129,25 @@ export default function AssistantPanel({
 
   const create = useCreateAssistantMutation({
     onSuccess: (data) => {
-      setCurrentAssistantId(data.id);
-      showToast({
-        message: `${localize('com_assistants_create_success')} ${
-          data.name ?? localize('com_ui_assistant')
-        }`,
-      });
+      if (data && typeof data === 'object') {
+        setCurrentAssistantId(data.id);
+        showToast({
+          message: `${localize('com_assistants_create_success')} ${
+            data.name ?? localize('com_ui_assistant')
+          }`,
+        });
+      } else {
+        showToast({
+          message: localize('com_assistants_create_error'),
+          status: 'error',
+        });
+      }
     },
     onError: (err) => {
-      const error = err as Error;
+      const error = err as any;
+      const detailedMessage = error.response?.data?.error || error.message || 'Unknown error';
       showToast({
-        message: `${localize('com_assistants_create_error')}${
-          error.message ? ` ${localize('com_ui_error')}: ${error.message}` : ''
-        }`,
+        message: `${localize('com_assistants_create_error')}: ${detailedMessage}`,
         status: 'error',
       });
     },
@@ -169,6 +192,8 @@ export default function AssistantPanel({
       conversation_starters: starters,
       model,
       append_current_datetime,
+      data_sources,
+      group,
     } = data;
 
     if (assistant_id) {
@@ -183,6 +208,8 @@ export default function AssistantPanel({
           tools,
           endpoint,
           append_current_datetime,
+          data_sources,
+          ...(isAdmin ? { group: group ?? null } : {}),
         },
       });
       return;
@@ -198,6 +225,7 @@ export default function AssistantPanel({
       endpoint,
       version,
       append_current_datetime,
+      data_sources,
     });
   };
 
@@ -384,6 +412,47 @@ export default function AssistantPanel({
           {/* Knowledge */}
           {(codeEnabled === true || retrievalEnabled === true) && version == 1 && (
             <Knowledge assistant_id={assistant_id} files={files} endpoint={endpoint} />
+          )}
+          {/* Data Sources (E2B Only) */}
+          {endpoint === 'e2bAssistants' && (
+            <DataSources assistant_id={assistant_id} />
+          )}
+          {/* 分组可见性（仅 ADMIN 用户且助手已创建时可设置） */}
+          {isAdmin && assistant_id && (
+            <div className="mb-6">
+              <label className={labelClass}>{localize('com_assistants_visibility_group_label')}</label>
+              <p className="mb-2 text-xs text-text-secondary">
+                {localize('com_assistants_visibility_group_desc')}
+              </p>
+              <Controller
+                name="group"
+                control={control}
+                render={({ field }) => (
+                  <SelectDropDown
+                    emptyTitle={true}
+                    value={field.value || ''}
+                    setValue={(val: string | { value?: string; label?: string }) => {
+                      const strVal =
+                        typeof val === 'object' && val !== null
+                          ? (val.value ?? '')
+                          : (val ?? '');
+                      field.onChange(strVal === '' ? null : strVal);
+                    }}
+                    availableValues={[
+                      { value: '', label: localize('com_assistants_visibility_group_all_users') },
+                      ...(groupsData?.groups?.map((g) => ({ value: g.name, label: g.name })) ?? []),
+                    ]}
+                    showAbove={false}
+                    showLabel={false}
+                    className={cn(
+                      cardStyle,
+                      'flex h-[40px] w-full flex-none items-center justify-center px-4 hover:cursor-pointer',
+                    )}
+                    containerClassName="rounded-md"
+                  />
+                )}
+              />
+            </div>
           )}
           {/* Capabilities */}
           <CapabilitiesForm

@@ -22,6 +22,7 @@ export enum EModelEndpoint {
   anthropic = 'anthropic',
   assistants = 'assistants',
   azureAssistants = 'azureAssistants',
+  e2bAssistants = 'e2bAssistants',
   agents = 'agents',
   custom = 'custom',
   bedrock = 'bedrock',
@@ -117,7 +118,10 @@ export const getSettingsKeys = (endpoint: EModelEndpoint | string, model: string
   return [combinedKey, endpointKey];
 };
 
-export type AssistantsEndpoint = EModelEndpoint.assistants | EModelEndpoint.azureAssistants;
+export type AssistantsEndpoint =
+  | EModelEndpoint.assistants
+  | EModelEndpoint.azureAssistants
+  | EModelEndpoint.e2bAssistants;
 
 export const isAssistantsEndpoint = (_endpoint?: AssistantsEndpoint | null | string): boolean => {
   const endpoint = _endpoint ?? '';

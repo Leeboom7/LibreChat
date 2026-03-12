@@ -191,6 +191,7 @@ export enum AgentCapabilities {
 export const defaultAssistantsVersion = {
   [EModelEndpoint.assistants]: 2,
   [EModelEndpoint.azureAssistants]: 1,
+  [EModelEndpoint.e2bAssistants]: 2,
 };
 
 export const baseEndpointSchema = z.object({
@@ -257,6 +258,19 @@ export const assistantEndpointSchema = baseEndpointSchema.merge(
 );
 
 export type TAssistantEndpoint = z.infer<typeof assistantEndpointSchema>;
+
+export const e2bAssistantEndpointSchema = baseEndpointSchema.merge(
+  z.object({
+    /* e2b assistants specific */
+    disableBuilder: z.boolean().optional(),
+    capabilities: z.array(z.string()).optional(),
+    allowedLibraries: z.array(z.string()).optional(),
+    sandboxTemplate: z.string().optional(),
+    e2b_config: z.record(z.any()).optional(),
+  }),
+);
+
+export type TE2BAssistantEndpoint = z.infer<typeof e2bAssistantEndpointSchema>;
 
 export const defaultAgentCapabilities = [
   AgentCapabilities.execute_code,
@@ -966,12 +980,14 @@ export const defaultEndpoints: EModelEndpoint[] = [
   EModelEndpoint.anthropic,
   EModelEndpoint.custom,
   EModelEndpoint.bedrock,
+  EModelEndpoint.e2bAssistants,
 ];
 
 export const alternateName = {
   [EModelEndpoint.openAI]: 'OpenAI',
   [EModelEndpoint.assistants]: 'Assistants',
   [EModelEndpoint.agents]: 'My Agents',
+  [EModelEndpoint.e2bAssistants]: 'E2B Data Analyst',
   [EModelEndpoint.azureAssistants]: 'Azure Assistants',
   [EModelEndpoint.azureOpenAI]: 'Azure OpenAI',
   [EModelEndpoint.google]: 'Google',
@@ -1088,6 +1104,7 @@ export const bedrockModels = [
 export const defaultModels = {
   [EModelEndpoint.azureAssistants]: sharedOpenAIModels,
   [EModelEndpoint.assistants]: [...sharedOpenAIModels, 'chatgpt-4o-latest'],
+  [EModelEndpoint.e2bAssistants]: [...sharedOpenAIModels, 'chatgpt-4o-latest'],
   [EModelEndpoint.agents]: sharedOpenAIModels, // TODO: Add agent models (agentsModels)
   [EModelEndpoint.google]: [
     // Gemini 2.5 Models
@@ -1119,6 +1136,7 @@ export const initialModelsConfig: TModelsConfig = {
   initial: [],
   [EModelEndpoint.openAI]: openAIModels,
   [EModelEndpoint.assistants]: openAIModels.filter(fitlerAssistantModels),
+  [EModelEndpoint.e2bAssistants]: openAIModels.filter(fitlerAssistantModels),
   [EModelEndpoint.agents]: openAIModels, // TODO: Add agent models (agentsModels)
   [EModelEndpoint.azureOpenAI]: openAIModels,
   [EModelEndpoint.google]: defaultModels[EModelEndpoint.google],
@@ -1130,6 +1148,7 @@ export const EndpointURLs = {
   [EModelEndpoint.assistants]: `${apiBaseUrl()}/api/assistants/v2/chat`,
   [EModelEndpoint.azureAssistants]: `${apiBaseUrl()}/api/assistants/v1/chat`,
   [EModelEndpoint.agents]: `${apiBaseUrl()}/api/${EModelEndpoint.agents}/chat`,
+  [EModelEndpoint.e2bAssistants]: `${apiBaseUrl()}/api/e2b-assistants/chat`,
 } as const;
 
 export const modularEndpoints = new Set<EModelEndpoint | string>([
@@ -1140,6 +1159,7 @@ export const modularEndpoints = new Set<EModelEndpoint | string>([
   EModelEndpoint.custom,
   EModelEndpoint.agents,
   EModelEndpoint.bedrock,
+  EModelEndpoint.e2bAssistants,
 ]);
 
 export const supportsBalanceCheck = {
@@ -1152,6 +1172,7 @@ export const supportsBalanceCheck = {
   [EModelEndpoint.azureOpenAI]: true,
   [EModelEndpoint.bedrock]: true,
   [EModelEndpoint.google]: true,
+  [EModelEndpoint.e2bAssistants]: true,
 };
 
 export const visionModels = [

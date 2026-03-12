@@ -368,6 +368,7 @@ router.get('/download/:userId/:file_id', fileAccess, async (req, res) => {
 
 router.post('/', async (req, res) => {
   const metadata = req.body;
+  logger.info(`[Files POST] Incoming upload request. Body: ${JSON.stringify(metadata)}`);
   let cleanup = true;
 
   try {
@@ -376,7 +377,27 @@ router.post('/', async (req, res) => {
     metadata.temp_file_id = metadata.file_id;
     metadata.file_id = req.file_id;
 
-    if (isAssistantsEndpoint(metadata.endpoint)) {
+    // Fix for E2B Assistant file uploads from frontend
+    // Frontend sends endpoint='default' and message_file='true' but provides e2b_assistant_id
+    if (metadata.e2b_assistant_id) {
+      logger.info(`[Files POST] Detected E2B upload via e2b_assistant_id. metadata.message_file=${metadata.message_file}`);
+      metadata.endpoint = EModelEndpoint.e2bAssistants;
+      metadata.assistant_id = metadata.e2b_assistant_id;
+      
+      // Only force persistent file if this is NOT a message attachment
+      // message_file=true means it's a chat message attachment (temporary)
+      // message_file=false/undefined means it's from assistant sidebar (persistent)
+      if (!metadata.message_file) {
+        logger.info(`[Files POST] E2B upload is for assistant persistent files (message_file is false/undefined)`);
+        // This is a persistent assistant file from sidebar, ensure message_file stays false
+        metadata.message_file = false;
+      } else {
+        logger.info(`[Files POST] E2B upload is a chat message attachment (message_file=true), keeping as temporary`);
+        // This is a message attachment, keep message_file=true so it won't be saved to assistant config
+      }
+    }
+
+    if (isAssistantsEndpoint(metadata.endpoint) || metadata.endpoint === EModelEndpoint.e2bAssistants) {
       return await processFileUpload({ req, res, metadata });
     }
 

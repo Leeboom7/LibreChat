@@ -50,12 +50,16 @@ export default function ExecuteCode({
   args,
   output = '',
   attachments,
+  startTime,
+  elapsedTime,
 }: {
   initialProgress: number;
   isSubmitting: boolean;
   args?: string;
   output?: string;
   attachments?: TAttachment[];
+  startTime?: number;
+  elapsedTime?: number;
 }) {
   const localize = useLocalize();
   const hasOutput = output.length > 0;
@@ -65,10 +69,46 @@ export default function ExecuteCode({
   const showAnalysisCode = useRecoilValue(store.showCode);
   const [showCode, setShowCode] = useState(showAnalysisCode);
   const [contentHeight, setContentHeight] = useState<number | undefined>(0);
+  const [currentTime, setCurrentTime] = useState(elapsedTime || 0);
 
   const prevShowCodeRef = useRef<boolean>(showCode);
   const { lang, code } = useParseArgs(args) ?? ({} as ParsedArgs);
   const progress = useProgress(initialProgress);
+  const [clientStartTime, setClientStartTime] = useState<number | null>(null);
+
+  // ✨ 当进入 PENDING 状态（无 elapsedTime）时，记录客户端时间
+  useEffect(() => {
+    if (initialProgress > 0 && initialProgress < 1 && !elapsedTime && !clientStartTime) {
+      setClientStartTime(Date.now());
+    }
+  }, [initialProgress, elapsedTime, clientStartTime]);
+
+  // ✨ 实时计时器（使用客户端时间避免时钟不同步）
+  useEffect(() => {
+    if (elapsedTime) {
+      // 已完成，使用服务器的 elapsedTime
+      setCurrentTime(elapsedTime);
+      return;
+    }
+
+    if (!clientStartTime) {
+      // 还未进入 PENDING 状态
+      return;
+    }
+
+    // 执行中，每 100ms 更新一次（使用客户端时间）
+    const timer = setInterval(() => {
+      setCurrentTime(Date.now() - clientStartTime);
+    }, 100);
+
+    return () => clearInterval(timer);
+  }, [elapsedTime, clientStartTime]);
+
+  const formatTime = (ms: number) => {
+    if (ms < 1000) return `${ms}ms`;
+    const seconds = (ms / 1000).toFixed(1);
+    return `${seconds}s`;
+  };
 
   useEffect(() => {
     if (output !== outputRef.current) {
@@ -220,6 +260,12 @@ export default function ExecuteCode({
         </div>
       </div>
       {attachments && attachments.length > 0 && <AttachmentGroup attachments={attachments} />}
+      {/* ✨ E2B 执行时间显示 */}
+      {(startTime || elapsedTime) && (
+        <div className="mt-0.5 mb-3 flex items-center gap-1.5 text-xs text-text-secondary">
+          <span className="font-mono">⏱️ {formatTime(currentTime)}</span>
+        </div>
+      )}
     </>
   );
 }

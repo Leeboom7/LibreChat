@@ -28,4 +28,18 @@ export type AssistantForm = {
   model: string;
   functions: string[];
   append_current_datetime: boolean;
+  data_sources?: Array<{
+    id?: string;
+    type: string;
+    name: string;
+    config: {
+      host: string;
+      port: number;
+      database: string;
+      user: string;
+      password?: string;
+    };
+  }>;
+  /** ADMIN 可设置的助手可见分组，空値表示对所有用户可见 */
+  group?: string | null;
 } & Actions;

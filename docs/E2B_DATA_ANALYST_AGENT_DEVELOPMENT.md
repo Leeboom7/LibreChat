@@ -1,0 +1,667 @@
+# E2B Data Analyst Agent 开发文档
+
+## 1. 项目概述
+
+### 1.1 目标
+在LibreChat项目中开发基于E2B沙箱的数据分析Agent模块，与Azure Assistants**并行**运行，用于处理Azure Assistants无法解决的场景（如长时间运行的代码执行、XGBoost等密集型工作负载）。
+
+### 1.2 架构定位
+```
+┌─────────────────────────────────────────────────────────┐
+│                    LibreChat Frontend                    │
+└────────────────────┬────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│                  API Layer (Express.js)                  │
+│  ┌──────────────────┐  ┌──────────────────┐              │
+│  │ Azure Assistants │  │  E2B Assistants  │              │
+│  │  (现有)          │  │  (新增)          │              │
+│  └──────────────────┘  └──────────────────┘              │
+│         │                        │                       │
+│         ▼                        ▼                       │
+│  ┌──────────────────┐  ┌──────────────────┐              │
+│  │ Azure OpenAI API │  │  E2B + LLM API   │              │
+│  └──────────────────┘  └──────────────────┘              │
+└─────────────────────────────────────────────────────────┘
+```
+
+**重要说明**：
+- **不删除**现有的Azure Assistants模块
+- 两者并行运行，根据使用场景选择
+- E2B Agent专门用于需要长时间代码执行、复杂计算的场景
+- 访问控制（私有/公共Assistant）由协作人员实现
+
+---
+
+## 2. 职责分工
+
+| 模块 | 负责人 | 说明 |
+|------|--------|------|
+| E2B客户端集成 | **当前开发** | E2B SDK集成、沙箱管理 |
+| Code Execution服务 | **当前开发** | 代码执行、结果捕获 |
+| Data Analyst Agent | **当前开发** | Agent核心逻辑、LLM集成 |
+| 文件处理 | **当前开发** | 文件上传、数据集加载 |
+| 访问控制 | **协作人员** | 私有/公共Assistant权限管理 |
+| 前端UI | **协作人员** | E2B Assistant界面展示 |
+| 配置管理 | **协作人员** | 环境变量、配置文件 |
+
+---
+
+## 3. 技术栈
+
+### 3.1 核心依赖
+- **E2B Code Interpreter SDK**: `@e2b/code-interpreter` (v2.8.4+)
+- **OpenAI API**: `openai` (v4.x) - 用于 LLM 推理（GPT-4, GPT-4o 等模型）
+- **MongoDB**: 存储 Assistant 配置、对话历史、文件元数据
+- **Node.js/Express.js**: 后端框架（v18+）
+
+### 3.2 LLM 说明
+本项目使用 **OpenAI API** 进行推理，支持的模型包括：
+- GPT-4 / GPT-4-turbo
+- GPT-4o / GPT-4o-mini
+- **Azure OpenAI** (推荐配置)
+  - 支持 Azure OpenAI Service 部署
+  - 支持 gpt-5-mini 等最新预览模型
+  - 自动处理 Azure 特定的 API 版本和端点格式
+- 或任何兼容 OpenAI API 的模型（如通过代理访问的其他模型）
+
+#### Azure OpenAI 集成 (2026-01-15)
+项目已完全支持 Azure OpenAI API，配置方式如下：
+
+**环境变量配置**:
+```env
+# 保持默认值触发 Azure 优先级
+OPENAI_API_KEY=user_provided
+
+# Azure OpenAI 配置
+AZURE_OPENAI_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
+AZURE_OPENAI_API_KEY=your_azure_api_key
+AZURE_OPENAI_API_VERSION=2025-01-01-preview
+AZURE_OPENAI_DEPLOYMENT=gpt-5-mini
+```
+
+**初始化逻辑** (`initialize.js`):
+- 检测到 `OPENAI_API_KEY=user_provided` 时，优先使用 Azure 配置
+- 创建 Azure OpenAI 客户端时使用部署特定的 baseURL：
+  ```javascript
+  baseURL: `${azureEndpoint}/openai/deployments/${azureDeployment}`
+  ```
+- 在客户端对象上附加 `azureDeployment` 属性供 Agent 使用
+
+**Azure 特性处理**:
+1. **模型名称**: E2B Agent 优先使用 `openai.azureDeployment` 而非 `assistant.model`
+2. **Temperature 限制**: Azure OpenAI 的 gpt-5-mini 不支持 temperature=0，仅支持默认值 (1)
+   - Agent 自动检测 Azure 并跳过 temperature 参数
+3. **API 版本**: 使用 `2025-01-01-preview` 支持最新模型特性
+
+---
+
+## 4. 目录结构规划
+
+```
+LibreChat/
+├── api/
+│   ├── models/
+│   │   └── E2BAssistant.js              # [已实现] E2B Assistant数据模型
+│   ├── server/
+│   │   ├── services/
+│   │   │   ├── Agents/
+│   │   │   │   └── e2bAgent/
+│   │   │   │       ├── index.js           # [已实现] 870行 - ReAct循环Agent核心
+│   │   │   │       ├── contextManager.js  # [已实现] 314行 - 上下文管理器 
+│   │   │   │       ├── prompts.js         # [已实现] 213行 - 系统提示词
+│   │   │   │       └── tools.js           # [已实现] 352行 - 工具定义与执行
+│   │   │   ├── Endpoints/
+│   │   │   │   └── e2bAssistants/
+│   │   │   │       ├── index.js           # [已实现] 端点入口
+│   │   │   │       ├── initialize.js      # [已实现] 910行 - E2B沙箱生命周期管理
+│   │   │   │       └── buildOptions.js    # [已实现] 选项构建
+│   │   │   ├── Sandbox/
+│   │   │   │   ├── codeExecutor.js        # [已实现] 206行 - Python代码执行
+│   │   │   │   └── fileHandler.js         # [已实现] 172行 - 文件同步与持久化
+│   │   └── routes/
+│   │       └── e2bAssistants/
+│   │           ├── index.js               # [已实现] 路由注册
+│   │           └── controller.js          # [已实现] 851行 - HTTP/SSE控制器
+│   └── tests/
+│       └── e2b/
+│           ├── codeExecutor.test.js       # [已实现] CodeExecutor单元测试
+│           ├── fileHandler.test.js        # [已实现] FileHandler单元测试
+│           ├── real_integration.js        # [已实现] 真实环境端到端测试
+│           └── debug_sandbox.js           # [已实现] 沙箱调试脚本
+├── packages/
+│   └── data-schemas/
+│       ├── src/
+│       │   ├── schema/
+│       │   │   └── e2bAssistant.ts        # [已实现] E2B Assistant Schema
+│       │   ├── models/
+│       │   │   └── e2bAssistant.ts        # [已实现] E2B Assistant Model
+│       │   └── types/
+│       │       └── e2bAssistant.ts        # [已实现] TypeScript类型定义
+├── docs/
+│   ├── E2B_AGENT_ARCHITECTURE.md          # [已实现] 系统架构文档
+│   ├── E2B_AGENT_FIXES.md                 # [已实现] 问题解决文档
+│   ├── E2B_DATA_ANALYST_AGENT_DEVELOPMENT.md # [本文档] 开发文档
+│   └── E2B_AGENT_TEST_CASES.md            # [已实现] 测试用例
+```
+
+---
+
+## 5. 核心模块实现详情
+
+### 5.1 Context Manager (`contextManager.js`) 
+- **功能**: 上下文管理的 Single Source of Truth
+- **代码**: 314 行
+- **职责**:
+  - **会话状态管理**: 追踪已上传文件和生成的工件（图表、CSV等）
+  - **上下文生成**: 为 LLM 生成结构化上下文（文件列表、工件信息）
+  - **conversationId 追踪**: 确保工件关联到正确的对话
+  - **文件信息存储**: 存储 file_id 用于沙箱恢复，但不暴露给 LLM
+- **关键方法**:
+  - `updateUploadedFiles()`: 更新已上传文件列表
+  - `addGeneratedArtifact()`: 追踪生成的工件
+  - `generateSystemContext()`: 生成结构化上下文注入到 system prompt
+
+### 5.2 E2BDataAnalystAgent (`index.js`)
+- **功能**: 基于 ReAct 循环的智能代理核心
+- **代码**: 870 行
+- **LLM**: 使用 **OpenAI API**（GPT-4/GPT-4o/GPT-5-mini）
+- **特性**:
+  - **ReAct 循环**: Plan → Execute → Observe，最多 20 次迭代
+  - **沙箱复用**: 同一对话复用相同沙箱实例，沙箱过期自动重建并恢复文件
+  - **三源文件收集**: 从消息附件 + tool_resources + root file_ids 收集文件
+  - **自愈能力**: 完整 traceback 传递给 LLM，自动分析并修复错误
+  - **智能终止**: 检测 `complete_task` 工具调用，明确任务完成信号
+  - **工具调用**: `execute_code`, `list_files`, `complete_task`
+  - **流式输出**: SSE 逐 token 返回 + Azure Assistant 风格的 Content 数组
+  - **执行时间追踪**: 记录代码执行开始时间和总耗时
+
+### 5.3 E2B Sandbox Manager (`initialize.js`)
+- **功能**: 管理 E2B 沙箱生命周期（创建、销毁、复用）
+- **代码**: 910 行
+- **SDK 适配**: 适配 `@e2b/code-interpreter` v2.8.4+
+- **关键特性**:
+  - **沙箱池管理**: 使用 Map 存储 userId+conversationId → sandbox 映射
+  - **自动重建**: 检测沙箱过期，自动创建新沙箱并恢复文件
+  - **OpenAI/Azure 双支持**: 自动检测并初始化相应的 LLM 客户端
+  - **文件操作**: `.files.write()`, `.files.read()` 与 Buffer/Stream 处理
+  - **配置**: 默认 `secure: false`，支持自定义模板或默认模板
+  - **生命周期钩子**: `cleanup()` 用于优雅关闭
+
+### 5.4 Tools (`tools.js`)
+- **功能**: 工具定义与执行逻辑
+- **代码**: 352 行
+- **工具列表**:
+  1. **`execute_code`**: 执行 Python 代码，自动捕获图表和输出
+     - 完整错误信息传递（error_type, error_message, traceback）
+     - 图表自动保存到系统存储并返回 Web 路径
+  2. **`list_files`**: 列出沙箱中的文件（用于文件检查）
+  3. **`complete_task`**: 标记任务完成，接受 summary 参数
+     - LLM 主动声明完成，trigger 循环终止
+- **关键特性**:
+  - **统一观察格式**: 成功/失败都返回结构化 JSON
+  - **完整错误链**: errorName + error + traceback 完整传递给 LLM
+  - **Context Manager 集成**: 自动更新工件追踪
+
+### 5.5 CodeExecutor (`codeExecutor.js`)
+- **功能**: 在 E2B 沙箱中执行 Python 代码并处理结果
+- **代码**: 206 行
+- **特性**: 
+  - **图表提取**: 自动从 execution results 提取 PNG/JPEG/SVG 图片
+  - **错误捕获**: 完整 traceback + errorName + error message 传递
+  - **文件操作**: 支持文件上传（Buffer → sandbox）和文件列表
+  - **沙箱管理集成**: 通过 e2bClientManager 获取当前会话的沙箱实例
+  - **错误恢复**: 使用显式 `hasError` boolean 判断执行状态
+
+### 5.6 FileHandler (`fileHandler.js`)
+- **功能**: 处理 LibreChat 系统存储与 E2B 沙箱之间的文件同步
+- **代码**: 172 行
+- **特性**:
+  - **多存储支持**: 兼容 Local, S3, Azure Blob Storage, OpenAI/Azure Assistant
+  - **双向同步**: 
+    - 上传：系统存储 → E2B 沙箱（使用原始文件名）
+    - 下载：E2B 沙箱 → 系统存储（Artifacts 持久化）
+  - **策略模式**: 根据文件来源（local/s3/azure/openai）选择对应策略
+  - **流式处理**: Stream → Buffer → E2B 上传
+  - **沙箱恢复**: 从数据库 file_id 重新上传文件到新沙箱
+
+### 5.7 Controller (`controller.js`)
+- **功能**: HTTP/SSE 请求处理与响应流管理
+- **代码**: 851 行
+- **特性**:
+  - **SSE 流式传输**: Azure Assistant 风格的 Content 数组（TEXT + TOOL_CALL）
+  - **contentParts 初始化**: 使用零宽空格占位符防止稀疏数组错误
+  - **消息持久化**: 用户消息 + Agent 响应保存到 MongoDB
+  - **历史加载**: 多轮对话加载历史消息（转换为 OpenAI 格式）
+  - **文件元数据**: populateCodeFiles 函数处理文件检索
+  - **事件格式**: sync (助手名称) → TEXT/TOOL_CALL (内容) → final (完成)
+
+### 5.8 System Prompt 优化 (2026-01-15)
+
+**背景**: gpt-5-mini 是轻量级预览模型，在数据分析场景中存在以下问题：
+- 重复性输出（重复执行相同分析）
+- 结构化不足（缺少清晰的段落和章节）
+- 缺乏系统性思考（未按逻辑顺序推进）
+
+**优化策略** (`prompts.js`):
+
+#### 1. 明确工作流程
+```
+## 🔄 Execution Workflow
+1️⃣ **Plan** (First turn only)
+   - List 5-10 analysis steps
+
+2️⃣ **Execute** (Iterative loop):
+   - **State Step**: Briefly describe current step
+   - **Action**: Call `execute_code` directly
+     - 🛑 **DO NOT** write Python code in markdown block before calling tool
+     - ✅ **DO** call tool immediately with code in arguments
+   - **Observation**: Review result, note success/error
+   - **Progress**: Check if complete or continue
+```
+
+#### 2. 关键约束
+- **禁止 Markdown 代码块**: 强调直接调用工具，不要先写 ```python 块
+- **强制图像显示**: 必须使用 `![Description](path_from_result)` 显示图片
+- **错误自愈**: 遇到错误时分析 traceback，修复后重试，无需询问用户
+
+#### 3. 环境说明
+- 列出可用的 Python 库（pandas, numpy, matplotlib, seaborn, scikit-learn 等）
+- 说明文件路径规则（使用完整路径，不添加 UUID 前缀）
+- 可视化提示（使用 `plt.show()`，图像自动捕获）
+
+**效果**:
+- 输出更结构化（清晰的步骤划分）
+- 减少重复执行（按计划逐步推进）
+- 图像显示更可靠（强制 Markdown 语法）
+- 错误恢复更自主（分析错误并自动修复）
+
+---
+
+## 6. 系统集成点
+
+### 6.1 端点注册
+- **Enum**: 在 `packages/data-provider/src/schemas.ts` 添加了 `EModelEndpoint.e2bAssistants`。
+- **Index**: 在 `api/server/services/Endpoints/index.js` 注册了初始化入口。
+- **Config**: 在 `api/server/services/Config/EndpointService.js` 添加了配置生成逻辑。
+
+### 6.2 助手逻辑集成
+- **Helpers**: 在 `api/server/controllers/assistants/helpers.js` 中添加了对 `e2bAssistants` 的支持：
+  - `getOpenAIClient`: 路由到 E2B 的初始化逻辑，并确保初始化 OpenAI 客户端进行 Agent 推理。
+  - `fetchAssistants`: 从 `E2BAssistant` 模型获取助手列表。
+
+---
+
+## 7. 自定义模板与预装包 (重要 💡)
+
+### 7.1 模板系统 (V2)
+本项目采用 E2B 最新的 **TypeScript 模板系统**。模板定义位于 `e2b_template/data-analyst/template.ts`。这种方式比旧的 Dockerfile 更灵活，支持编程式定义环境。
+
+### 7.2 构建与发布步骤
+如果需要添加新的 Python 包（如 `lightgbm`）或系统依赖：
+
+1.  **修改模板定义**:
+    编辑 `e2b_template/data-analyst/template.ts`:
+    ```typescript
+    // 示例：添加新的 Python 包
+    .run("pip install lightgbm")
+    ```
+
+2.  **构建模板**:
+    ```bash
+    cd e2b_template/data-analyst
+    npm install
+    # 构建开发版 (Dev)
+    npm run e2b:build:dev
+    # 或构建生产版 (Prod)
+    # npm run e2b:build:prod
+    ```
+
+3.  **获取 Template ID**:
+    构建成功后，控制台会输出 Template ID (如 `xed696qfsyzpaei3ulh5`)。
+
+4.  **配置使用**:
+    将新的 Template ID 更新到 `.env` 文件中：
+    ```bash
+    E2B_SANDBOX_TEMPLATE=xed696qfsyzpaei3ulh5
+    ```
+
+---
+
+## 8. 故障排除 (Troubleshooting)
+
+### 8.1 502: The sandbox is running but port is not open
+*   **原因**：沙箱内的代码解释器进程未启动。
+*   **解决方法**：
+    1.  **检查 Template ID**：确保 `.env` 中的 ID 对应的是基于 `code-interpreter` 构建的模板。
+    2.  **重新构建**：如果模板损坏，重新运行构建命令生成新 ID。
+
+### 8.2 400: Template is not compatible with secured access
+*   **原因**：E2B API Key 开启了“安全访问”限制。
+*   **解决方法**：我们在代码中已默认设置 `secure: false`。如果问题依旧，请检查 E2B Dashboard 的 API Key 设置。
+
+---
+
+## 9. 前端集成状态与已知问题 (2026-01-04)
+
+### 9.1 已完成的集成 ✅
+- **图标支持**: E2B Assistants 现在使用 Sparkles (✨) 图标。
+- **助手创建**: 修复了 JSON 解析错误，助手可以成功创建并保存到数据库。
+- **后端路由**: 补全了 `/documents` 和 `/tools` 端点，消除了前端 404 错误。
+- **助手列表**: 修复 API 响应格式，刷新后可正确显示已创建的助手。
+- **文件上传**: 完整实现文件上传到 E2B 沙箱功能，支持多种存储后端（Local/S3/Azure）。
+- **消息流**: SSE 消息格式完全对齐前端预期，实现 created 和 final 事件。
+- **数据持久化**: 用户消息和响应消息正确保存到数据库。
+
+### 9.2 修复的关键 Bug ✅
+
+#### ✅ 1. 文件上传失败 (已修复)
+- **问题**: `Cannot read properties of undefined (reading 'paths')`
+- **原因**: E2B 路由缺少 `configMiddleware`，导致 `req.config` 未初始化
+- **修复**: 在路由中添加 `configMiddleware`，确保配置正确加载
+
+#### ✅ 2. 前端无输出 (已修复)
+- **问题**: 消息发送后前端无响应，显示 "2/2" 但无内容
+- **原因**: SSE 消息格式不符合前端预期，缺少必需字段
+- **修复**: 
+  - 实现完整的 SSE 事件流（created → final）
+  - 添加 conversation, requestMessage, responseMessage
+  - 使用 `sanitizeMessageForTransmit` 清理消息
+
+#### ✅ 3. 助手列表不显示 (已修复)
+- **问题**: 刷新页面后看不到已创建的助手
+- **原因**: API 返回数组而非 `{ data: [...] }` 格式
+- **修复**: 统一 API 响应格式，与 Azure Assistants 保持一致
+
+#### ✅ 4. 助手配置保存问题 (已修复 - 2026-01-04)
+- **问题**: 创建助手后刷新页面，部分配置字段重置（description、instructions、conversation_starters、append_current_datetime、tools等）
+- **原因**: 
+  - Schema缺少 `append_current_datetime`、`tools`、`tool_resources` 字段定义
+  - Controller的 get/list/update 方法未映射所有字段
+  - `instructions` ↔ `prompt` 字段映射不完整
+- **修复**:
+  - 在 `e2bAssistantSchema` 中添加缺失字段（append_current_datetime、tools、tool_resources）
+  - 在 `createAssistant` 中保存所有前端发送的字段
+  - 在 `getAssistant`/`listAssistants` 中返回完整字段映射并设置默认值
+  - 在 `updateAssistant` 中使用白名单方式处理所有可更新字段
+
+#### ✅ 5. 对话历史丢失问题 (已修复 - 2026-01-04)
+- **问题**: 同一对话中的第二条消息不记得第一条说了什么
+- **原因**: `chat` 端点调用 `agent.processMessage(text)` 时未传递历史消息
+- **修复**:
+  - 在 `controller.js` 中添加 `getMessages` 导入
+  - 在调用 `processMessage` 前使用 `getMessages` 加载对话历史
+  - 将历史消息转换为 OpenAI 格式（role: user/assistant）并传递给 Agent
+
+#### ✅ 6. 图像路径替换失败 (已修复 - 2026-01-04)
+- **问题**: LLM生成的sandbox:路径无法在前端显示图像
+- **原因**: 
+  - `image_url_map` 中的路径模式不够全面
+  - 仅使用精确匹配，无法处理LLM生成的各种路径格式
+- **修复**:
+  - 在 `tools.js` 中添加更多sandbox路径模式（sandbox:/、sandbox://、/tmp/等）
+  - 在 `index.js` 中添加两层替换策略：
+    1. 精确匹配 `image_url_map` 中的所有模式
+    2. 使用正则表达式匹配任何包含图像文件名的sandbox:或文件路径
+  - 存储 `image_names` 和 `image_actual_paths` 用于模式匹配
+
+### 9.3 当前功能状态
+
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| 助手创建 | ✅ 完成 | 支持通过 Builder 创建助手 |
+| 助手配置保存 | ✅ 完成 | 所有配置字段正确持久化 |
+| 助手列表 | ✅ 完成 | 刷新后正确显示 |
+| 文件上传 | ✅ 完成 | 支持 Local/S3/Azure 存储 |
+| 代码执行 | ✅ 完成 | E2B 沙箱执行 Python 代码 |
+| 图像生成 | ✅ 完成 | 自动提取并显示matplotlib/seaborn图表 |
+| 消息显示 | ✅ 完成 | SSE 流式返回消息 |
+| 数据持久化 | ✅ 完成 | 消息保存到 MongoDB |
+| 历史对话 | ✅ 完成 | 多轮对话保持上下文 |
+| 沙箱复用 | ✅ 完成 | 同一对话复用沙箱实例 |
+
+### 9.4 待优化功能
+
+- **流式响应**: 当前已实现基础流式（逐 token 输出），可进一步优化性能
+- **错误重试**: 增强 LLM 工具调用失败的重试机制
+- **Token 优化**: 减少系统提示词和工具定义的 Token 消耗
+- **访问控制**: 实现私有/公共助手权限管理（待协作人员完成）
+- **模型切换**: 支持前端动态选择 OpenAI / Azure OpenAI / 其他兼容 API
+- **Prompt 微调**: 针对不同模型（GPT-4o, gpt-5-mini）优化 system prompt
+
+---
+
+## 10. 最新更新 (2026-01-15)
+
+### E2B Assistant 文件持久化功能
+- ✅ 实现侧边栏文件上传功能（类似 Azure Assistants）
+- ✅ 文件关联到 assistant.tool_resources.code_interpreter.file_ids
+- ✅ E2B Agent 从三个来源读取文件（消息附件 + tool_resources + root file_ids）
+- ✅ 文件跨会话持久化（重新登录后仍然可用）
+- ✅ 支持多种存储后端（Local/S3/Azure/Firebase）
+- ✅ 文件元数据检索 API（populateCodeFiles）
+- ✅ 安全隔离：所有修改仅影响 E2B，不影响其他 LibreChat 功能
+
+**修改的文件**:
+- `api/server/routes/e2bAssistants/controller.js`: 添加 populateCodeFiles 函数
+- `api/server/routes/files/files.js`: E2B 检测和路由修正
+- `api/server/services/Agents/e2bAgent/index.js`: 三源文件收集和去重
+- `api/server/services/Files/process.js`: E2B 特定的文件关联逻辑和 fallback
+- `client/src/hooks/Files/useFileHandling.ts`: 移除错误的 endpoint 覆盖
+
+**文件上传流程**:
+1. **侧边栏上传**（持久化）：文件关联到 assistant，保存到 tool_resources
+2. **聊天附件**（临时）：文件仅用于当前消息，不保存到 assistant
+
+详细流程请参阅 [文件流逻辑.md](./help_docs/文件流逻辑.md)
+
+### Azure OpenAI 集成
+- ✅ 支持 Azure OpenAI Service（优先于标准 OpenAI API）
+- ✅ 使用部署特定的 baseURL 格式
+- ✅ 自动处理 Azure 的 temperature 限制
+- ✅ 模型名称优先使用 Azure deployment 名称
+
+### System Prompt 优化
+- ✅ 针对 gpt-5-mini 优化工作流程
+- ✅ 强调结构化输出（Plan → Execute 迭代循环）
+- ✅ 禁止 Markdown 代码块，直接调用工具
+- ✅ 强制使用 Markdown 语法显示图像
+- ✅ 改进错误自愈能力
+
+### 代码质量
+- ✅ 清理所有临时调试日志
+- ✅ Temperature 处理逻辑简化
+- ✅ Azure 检测机制稳定
+- ✅ 代码安全审查完成（确认不影响其他功能）
+
+---
+
+## 11. 版本历史与修复记录
+
+### 最新更新 (2026-02-09)
+
+#### 🐛 Loading Dot 消失与 Prompt 优化
+- ✅ 修复 contentParts 稀疏数组问题（防止 null reference 错误）
+- ✅ 大幅优化 System Prompt（删除 ~80 行冗余内容）
+- ✅ loading dot 在所有情况下正常显示
+- ✅ 助手名称始终可见
+- ✅ 简单问答不再暴露内部流程
+
+**修复的文件**:
+- `api/server/routes/e2bAssistants/controller.js`: 初始化 contentParts 为包含零宽空格的数组
+- `api/server/services/Agents/e2bAgent/prompts.js`: 删除 Multi-Scenario 和 Common Error Patterns 章节
+- `api/server/services/Agents/e2bAgent/index.js`: Timer 与 finish_reason 优化
+- `client/src/components/Chat/Messages/Content/Parts/ExecuteCode.tsx`: 客户端计时器
+- `docs/WORK_LOG.md`: 更新工作日志
+
+**效果**:
+- 前端错误消除
+- 输出更专业简洁
+- Prompt 长度减少 ~8%
+
+### 最新更新 (2026-01-21)
+
+#### ⏱️ 执行时间显示功能
+- ✅ 在 E2B 代码执行时显示执行时间
+- ✅ 后端捕获 startTime 和 elapsedTime 并通过 SSE 发送
+- ✅ 前端实时显示计时器（执行中每 100ms 更新）
+- ✅ 完成后显示总执行时间（格式化为 "XXms" 或 "X.Xs"）
+- ✅ TypeScript 类型定义扩展（ToolCall 和 PartMetadata）
+- ✅ 计时器位置优化（避免与其他 UI 元素重叠）
+- ✅ 完全隔离，不影响 Azure Assistants 等其他模块
+
+**修改的文件**:
+- `api/server/services/Agents/e2bAgent/index.js`: 添加计时逻辑
+- `packages/data-provider/src/types/agents.ts`: 扩展 ToolCall 类型
+- `packages/data-provider/src/types/assistants.ts`: 扩展 PartMetadata 类型
+- `client/src/components/Chat/Messages/Content/Parts/ExecuteCode.tsx`: 添加计时器 UI
+- `client/src/components/Chat/Messages/Content/Part.tsx`: 传递计时数据
+
+**技术细节**:
+- 计时精度：毫秒级（Date.now()）
+- 实时更新：执行中每 100ms 刷新一次
+- 格式化：< 1s 显示 "XXms"，≥ 1s 显示 "X.Xs"
+- 位置：显示在代码块和输出下方，独立行
+
+---
+
+### 🎯 智能任务完成机制 (2026-01-19)
+**Git Commit**: feat(e2b): Add intelligent task completion with complete_task tool
+
+#### 主要工具
+1. **添加 `complete_task` 工具** ⭐⭐⭐
+   - **需求**: 解决 LLM 执行多步计划时提前停止的问题
+   - **问题**: 之前仅依赖"没有 tool_calls"判断任务完成，导致 LLM 执行一步后就停止
+   - **实现**:
+     - 新增 `complete_task` 工具（tools.js）：接受 summary 参数，返回任务完成标记
+     - 添加工具定义（prompts.js）：描述何时调用该工具
+     - 修改停止逻辑（index.js）：检测 `complete_task` 调用时立即停止循环
+     - 更新 System Prompt：明确要求完成所有步骤后 MUST 调用 `complete_task`
+
+2. **工作流程优化** 🔄
+   - **之前的问题**:
+     ```
+     Iteration 1: 计划 (4步) + 执行 Step 1 → 停止 ❌
+     用户手动提示 → Iteration 2: 执行 Step 2 → 停止 ❌
+     ```
+   - **优化后**:
+     ```
+     Iteration 1: 计划 + Step 1 工具调用
+     Iteration 2: Step 1 解释 + Step 2 工具调用
+     Iteration 3: Step 2 解释 + Step 3 工具调用
+     ...
+     Iteration N: 最后一步解释 + complete_task("所有步骤完成...") ✅
+     ```
+
+3. **Prompt 优化** 📝
+   - 简化 Execution Workflow 描述（从冗长的技术流程说明改为简洁规则）
+   - 删除"One tool per turn"规则（不必要的限制）
+   - 强调"MUST call complete_task"（使用大写 MUST）
+   - 添加具体示例：`complete_task(summary="...")`
+   - 明确禁止行为："do NOT just say 'will summarize', actually call the tool"
+
+4. **停止机制改进** ⚙️
+   - 从被动判断改为主动决策
+   - LLM 自主决定任务何时完成
+   - 系统检测到 `complete_task` 调用后立即停止
+   - 避免依赖"没有 tool_calls"的模糊判断
+
+#### 验证结果
+- ✅ LLM 自动执行多步计划（无需手动提示继续）
+- ✅ 每步执行后立即解释，体验流畅
+- ✅ 完成所有步骤后调用 `complete_task`
+- ✅ 任务完成标记明确，不再提前停止
+
+#### 技术细节
+**文件修改**:
+1. `api/server/services/Agents/e2bAgent/tools.js` (+18 行)
+   - 新增 `complete_task` 工具实现
+2. `api/server/services/Agents/e2bAgent/prompts.js` (+17 行)
+   - 添加工具定义和 workflow 优化
+3. `api/server/services/Agents/e2bAgent/index.js` (+10 行)
+   - 智能停止机制（检测 complete_task）
+
+**停止机制对比**:
+| 方式 | 判断依据 | 问题 |
+|------|---------|------|
+| 旧方式 | `!message.tool_calls` | LLM 解释后没调用工具就停止 |
+| 新方式 | `hasCompleteTask` 检测 | LLM 主动声明完成 ✅ |
+
+---
+
+### 🐛 关键 Bug 修复日 (2026-01-14)
+**Git Commit**: `9a854cb67` - fix: critical E2B Agent bug fixes and TOOL_CALL integration
+
+#### 主要工作
+1. **错误检测逻辑严重 Bug 修复** ⭐⭐⭐
+   - **问题**: JavaScript `!{}` 判断导致错误对象被误判为成功
+   - **影响**: LLM 无法感知代码执行失败，陷入无限重试循环
+   - **修复**: 使用显式 `hasError` boolean 变量
+   - **文件**: `initialize.js`, `codeExecutor.js`, `tools.js`
+
+2. **完整错误信息传递链**
+   - 添加 `errorName` 和 `traceback` 字段
+   - 从 initialize.js → codeExecutor.js → tools.js → LLM
+   - LLM 现在能根据完整堆栈跟踪自动修复错误
+
+3. **TOOL_CALL 事件系统实现** (Azure Assistant 风格)
+   - 实现 Content 数组架构（TEXT 和 TOOL_CALL 交错）
+   - 代码块和输出紧密显示
+   - 文件: `index.js`, `controller.js`
+
+4. 图表显示问题修复 + 通用错误处理策略
+
+#### 验证结果
+- ✅ 错误自动修复成功（ValueError → df.select_dtypes() 修复）
+- ✅ 4 张图表生成成功
+- ✅ TOOL_CALL 事件正确发送
+- ✅ ExecuteCode 组件正确显示
+
+---
+
+### 🚀 流式传输优化日 (2026-01-12)
+**Git Commit**: `e3f4a2b91` - feat: optimize SSE streaming for E2B Agent
+
+#### 主要优化
+1. **SSE 数据结构优化**
+   - 统一 TOOL_CALL 和 TEXT 事件格式
+   - contentIndex 正确递增逻辑
+   - 前端正确解析多内容块
+
+2. **前端渲染优化**
+   - ExecuteCode 组件性能优化
+   - 减少不必要的重渲染
+   - 改进 loading 状态显示
+
+3. **错误处理增强**
+   - SSE 连接中断自动重连
+   - 超时处理机制
+   - 错误消息友好显示
+
+---
+
+为了保持本文档的简洁性，详细的架构优化记录、Bug 修复详情和历史变更已移动到以下专门文档：
+
+- **问题解决与修复详情**: 请参阅 [E2B_AGENT_FIXES.md](./E2B_AGENT_FIXES.md)
+  - 包含 2026-01-14 的关键错误检测逻辑修复
+  - 包含 2026-01-07 的架构优化（图片路径、无限重试、工具精简等）
+  - 包含图表显示和 SSE 流式传输的修复细节
+
+- **每日工作日志**: 请参阅 [WORK_LOG.md](./WORK_LOG.md)
+  - 包含每日详细的开发进度和决策记录
+
+- **待办事项与规划**: 请参阅 [TODO.md](./TODO.md)
+
+---
+
+**创建日期**: 2025-12-23  
+**最后更新**: 2026-02-09  
+**当前状态**: ✅ 核心功能完成！
+- Azure OpenAI 集成完成
+- System Prompt 优化完成（精简 ~8%）
+- complete_task 智能任务完成机制正常工作
+- contentParts 稀疏数组问题已修复
+- 助手配置、历史对话、图像显示、沙箱复用、实时流式响应、错误自愈、Azure 风格输出均已正常工作
+  
+**当前分支**: `feature/e2b-integration`

@@ -135,6 +135,7 @@ const startServer = async () => {
   app.use('/api/actions', routes.actions);
   app.use('/api/keys', routes.keys);
   app.use('/api/user', routes.user);
+  app.use('/api/admin', routes.admin);
   app.use('/api/search', routes.search);
   app.use('/api/messages', routes.messages);
   app.use('/api/convos', routes.convos);
@@ -146,6 +147,7 @@ const startServer = async () => {
   app.use('/api/models', routes.models);
   app.use('/api/config', routes.config);
   app.use('/api/assistants', routes.assistants);
+  app.use('/api/e2b-assistants', routes.e2bAssistants);
   app.use('/api/files', await routes.files.initialize());
   app.use('/images/', createValidateImageRequest(appConfig.secureImageLinks), routes.staticRoute);
   app.use('/api/share', routes.share);

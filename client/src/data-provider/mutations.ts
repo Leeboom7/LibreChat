@@ -761,7 +761,7 @@ export const useCreateAssistantMutation = (
           return options?.onSuccess?.(newAssistant, variables, context);
         }
 
-        const currentAssistants = [newAssistant, ...JSON.parse(JSON.stringify(listRes.data))];
+        const currentAssistants = [newAssistant, ...JSON.parse(JSON.stringify(listRes.data ?? []))];
 
         queryClient.setQueryData<t.AssistantListResponse>(
           [QueryKeys.assistants, variables.endpoint, defaultOrderQuery],
@@ -825,6 +825,10 @@ export const useUpdateAssistantMutation = (
                   ...doc,
                   conversation_starters: updatedAssistant.conversation_starters,
                   append_current_datetime: variables.data.append_current_datetime,
+                  // 同步更新 group，避免 documentsMap 缓存覆盖正确值
+                  ...((variables.data as any).group !== undefined
+                    ? { group: (variables.data as any).group ?? null }
+                    : {}),
                 };
               }
               return doc;

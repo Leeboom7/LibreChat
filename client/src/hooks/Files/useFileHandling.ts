@@ -7,6 +7,7 @@ import {
   QueryKeys,
   Constants,
   EToolResources,
+  EModelEndpoint,
   mergeFileConfig,
   isAssistantsEndpoint,
   getEndpointFileConfig,
@@ -183,8 +184,11 @@ const useFileHandling = (params?: UseFileHandling) => {
       }
     }
 
-    if (!isAssistantsEndpoint(endpointType ?? endpoint)) {
-      if (!agent_id) {
+    if (
+      !isAssistantsEndpoint(endpointType ?? endpoint) ||
+      endpoint === EModelEndpoint.e2bAssistants
+    ) {
+      if (!agent_id && endpoint !== EModelEndpoint.e2bAssistants) {
         formData.append('message_file', 'true');
       }
       const tool_resource = extendedFile.tool_resource;
@@ -193,6 +197,16 @@ const useFileHandling = (params?: UseFileHandling) => {
       }
       if (conversation?.agent_id != null && formData.get('agent_id') == null) {
         formData.append('agent_id', conversation.agent_id);
+      }
+
+      // For E2B: Handle both sidebar uploads (with assistant_id) and chat uploads
+      if (endpoint === EModelEndpoint.e2bAssistants) {
+        // If assistant_id is provided, it's a sidebar upload (persistent file)
+        // Otherwise, it's a chat message attachment
+        if (!assistant_id || !params?.additionalMetadata?.assistant_id) {
+          formData.set('message_file', 'true');
+        }
+        // E2B uses default storage (local/S3/Azure) configured in backend, not OpenAI vector store
       }
 
       uploadFile.mutate(formData);

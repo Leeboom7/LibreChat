@@ -39,6 +39,8 @@ const keys = new Set([
   'conversation_starters',
   'model',
   'append_current_datetime',
+  'data_sources', // ✨ Add this!
+  'group', // 分组可见性
 ]);
 
 export default function AssistantSelect({
@@ -76,8 +78,12 @@ export default function AssistantSelect({
   const query = useListAssistantsQuery(endpoint, undefined, {
     select: (res) =>
       res.data.map((_assistant) => {
-        const source =
-          endpoint === EModelEndpoint.assistants ? FileSources.openai : FileSources.azure;
+        let source = FileSources.openai;
+        if (endpoint === EModelEndpoint.azureAssistants) {
+          source = FileSources.azure;
+        } else if (endpoint === EModelEndpoint.e2bAssistants) {
+          source = FileSources.local;
+        }
         const assistant: TAssistantOption = {
           ..._assistant,
           label: _assistant.name ?? '',
@@ -87,6 +93,15 @@ export default function AssistantSelect({
             ? ([] as Array<[string, ExtendedFile]>)
             : undefined,
         };
+
+        // Visibility group can be returned either as top-level `group` or inside `metadata.group`.
+        // Normalize it to top-level so the form always rehydrates correctly.
+        if (assistant.group === undefined) {
+          const metadataGroup = (_assistant.metadata as { group?: string | null } | undefined)?.group;
+          if (metadataGroup !== undefined) {
+            assistant.group = metadataGroup;
+          }
+        }
 
         const handleFile = (file_id: string, list?: Array<[string, ExtendedFile]>) => {
           const file = fileMap?.[file_id];
@@ -139,6 +154,14 @@ export default function AssistantSelect({
             assistant.conversation_starters = assistantDoc.conversation_starters;
           }
           assistant.append_current_datetime = assistantDoc.append_current_datetime ?? false;
+          // 分组可见性字段
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const docAny = assistantDoc as any;
+          if (docAny.group !== undefined) {
+            assistant.group = docAny.group;
+          } else if (docAny.metadata?.group !== undefined) {
+            assistant.group = docAny.metadata.group;
+          }
         }
 
         return assistant;
@@ -223,6 +246,16 @@ export default function AssistantSelect({
           return;
         }
 
+        if (name === 'data_sources' && Array.isArray(value)) {
+          formValues[name] = value;
+          return;
+        }
+
+        if (name === 'group') {
+          formValues[name] = (value as string | null | undefined) ?? null;
+          return;
+        }
+
         if (typeof value !== 'number' && typeof value !== 'object') {
           formValues[name] = value;
         }
@@ -239,6 +272,7 @@ export default function AssistantSelect({
       endpoint,
       lastSelectedModels,
       toolkits,
+      documentsMap,
     ],
   );
 

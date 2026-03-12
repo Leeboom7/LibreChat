@@ -1,4 +1,5 @@
 const accessPermissions = require('./accessPermissions');
+const e2bAssistants = require('./e2bAssistants');
 const assistants = require('./assistants');
 const categories = require('./categories');
 const endpoints = require('./endpoints');
@@ -19,6 +20,7 @@ const roles = require('./roles');
 const oauth = require('./oauth');
 const files = require('./files');
 const share = require('./share');
+const admin = require('./admin');
 const tags = require('./tags');
 const auth = require('./auth');
 const keys = require('./keys');
@@ -31,6 +33,7 @@ module.exports = {
   keys,
   user,
   tags,
+  admin,
   roles,
   oauth,
   files,
@@ -51,5 +54,6 @@ module.exports = {
   assistants,
   categories,
   staticRoute,
+  e2bAssistants,
   accessPermissions,
 };

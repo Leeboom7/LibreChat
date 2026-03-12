@@ -79,6 +79,19 @@ export interface FileSearchResource {
   vector_store_ids?: Array<string>;
 }
 
+export type DataSource = {
+  id?: string;
+  type: string;
+  name: string;
+  config: {
+    host: string;
+    port: number;
+    database: string;
+    user: string;
+    password?: string;
+  };
+};
+
 /* Assistant types */
 
 export type Assistant = {
@@ -94,6 +107,13 @@ export type Assistant = {
   object: string;
   tools?: FunctionTool[];
   tool_resources?: ToolResources;
+  data_sources?: DataSource[];
+  /** 助手可见性分组（仅 ADMIN 可设置） */
+  group?: string | null;
+  /** 创建者角色 */
+  role?: string;
+  /** 是否附加当前时间 */
+  append_current_datetime?: boolean;
 };
 
 export type TAssistantsMap = Record<AssistantsEndpoint, Record<string, Assistant>>;
@@ -110,6 +130,7 @@ export type AssistantCreateParams = {
   endpoint: AssistantsEndpoint;
   version: number | string;
   append_current_datetime?: boolean;
+  data_sources?: DataSource[];
 };
 
 export type AssistantUpdateParams = {
@@ -124,6 +145,9 @@ export type AssistantUpdateParams = {
   tool_resources?: ToolResources;
   endpoint: AssistantsEndpoint;
   append_current_datetime?: boolean;
+  data_sources?: DataSource[];
+  /** 助手可见性分组（仅 ADMIN 可设置） */
+  group?: string | null;
 };
 
 export type AssistantListParams = {
@@ -466,6 +490,10 @@ export type PartMetadata = {
   action?: boolean;
   auth?: string;
   expires_at?: number;
+  /** E2B only: Start time (Unix timestamp in ms) for execution timer */
+  startTime?: number;
+  /** E2B only: Elapsed time (ms) after execution completes */
+  elapsedTime?: number;
 };
 
 export type ContentPart = (
@@ -544,6 +572,9 @@ export type AssistantDocument = {
   createdAt?: Date;
   updatedAt?: Date;
   append_current_datetime?: boolean;
+  role?: string;
+  /** 助手可见性分组：仅该分组的用户可见，空值表示对所有用户可见 */
+  group?: string | null;
 };
 
 /* Agent types */

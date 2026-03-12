@@ -4,11 +4,18 @@ const {
   defaultOrderQuery,
   defaultAssistantsVersion,
 } = require('librechat-data-provider');
+const { getAssistants } = require('~/models/Assistant');
 const {
   initializeClient: initAzureClient,
 } = require('~/server/services/Endpoints/azureAssistants');
+const {
+  initializeClient: initE2BClient,
+  listAssistants: listE2BAssistants,
+} = require('~/server/services/Endpoints/e2bAssistants');
 const { initializeClient } = require('~/server/services/Endpoints/assistants');
 const { getEndpointsConfig } = require('~/server/services/Config');
+
+const toIdString = (value) => (value == null ? '' : value.toString?.() ?? String(value));
 
 /**
  * @param {ServerRequest} req
@@ -94,6 +101,40 @@ const listAllAssistants = async ({ req, res, version, query }) => {
     }
   }
 
+  // Enrich assistants with locally stored assistant documents (role, author, etc.)
+  try {
+    const assistantIds = allAssistants.map((a) => a.id).filter(Boolean);
+    if (assistantIds.length) {
+      const docs = await getAssistants({ assistant_id: { $in: assistantIds } });
+      const docMap = docs.reduce((acc, d) => {
+        if (d?.assistant_id) acc[d.assistant_id] = d;
+        return acc;
+      }, {});
+
+      for (const assistant of allAssistants) {
+        const doc = docMap[assistant.id];
+        if (doc) {
+          // merge role and any visibility fields from local doc into metadata if missing
+          assistant.metadata = assistant.metadata || {};
+          if (!assistant.metadata.role && doc.role) {
+            assistant.metadata.role = doc.role;
+          }
+          if (!assistant.metadata.visibleTo && doc.visibleTo) {
+            assistant.metadata.visibleTo = doc.visibleTo;
+          }
+          // normalize author to match metadata.author if missing
+          if (!assistant.metadata.author && doc.user) {
+            assistant.metadata.author = doc.user.toString?.() ?? doc.user;
+          }
+        }
+      }
+    }
+  } catch (err) {
+    // do not fail listing if enrichment fails
+    // eslint-disable-next-line no-console
+    console.debug('[listAllAssistants] enrichment failed', err?.message ?? err);
+  }
+
   return {
     data: allAssistants,
     body: {
@@ -165,6 +206,40 @@ const listAssistantsForAzure = async ({ req, res, version, azureConfig = {}, que
     }),
   );
 
+  // Try to enrich assistants returned from Azure with locally stored assistant documents
+  try {
+    const assistantIds = data.map((a) => a.id).filter(Boolean);
+    if (assistantIds.length) {
+      const docs = await getAssistants({ assistant_id: { $in: assistantIds } });
+      const docMap = docs.reduce((acc, d) => {
+        if (d?.assistant_id) acc[d.assistant_id] = d;
+        return acc;
+      }, {});
+
+      for (const assistant of data) {
+        const doc = docMap[assistant.id];
+        if (doc) {
+          // merge role and any visibility fields from local doc into metadata if missing
+          assistant.metadata = assistant.metadata || {};
+          if (!assistant.metadata.role && doc.role) {
+            assistant.metadata.role = doc.role;
+          }
+          if (!assistant.metadata.visibleTo && doc.visibleTo) {
+            assistant.metadata.visibleTo = doc.visibleTo;
+          }
+          // normalize author to match metadata.author if missing
+          if (!assistant.metadata.author && doc.user) {
+            assistant.metadata.author = doc.user.toString?.() ?? doc.user;
+          }
+        }
+      }
+    }
+  } catch (err) {
+    // do not fail listing if enrichment fails
+    // eslint-disable-next-line no-console
+    console.debug('[listAssistantsForAzure] enrichment failed', err?.message ?? err);
+  }
+
   return {
     first_id: data[0]?.id,
     last_id: data[data.length - 1]?.id,
@@ -196,6 +271,8 @@ async function getOpenAIClient({ req, res, endpointOption, initAppClient, overri
     result = await initializeClient({ req, res, version, endpointOption, initAppClient });
   } else if (endpoint === EModelEndpoint.azureAssistants) {
     result = await initAzureClient({ req, res, version, endpointOption, initAppClient });
+  } else if (endpoint === EModelEndpoint.e2bAssistants) {
+    result = await initE2BClient({ req, res, version, endpointOption, initAppClient });
   }
 
   return result;
@@ -234,6 +311,13 @@ const fetchAssistants = async ({ req, res, overrideEndpoint }) => {
   } else if (endpoint === EModelEndpoint.azureAssistants) {
     const azureConfig = appConfig.endpoints?.[EModelEndpoint.azureOpenAI];
     body = await listAssistantsForAzure({ req, res, version, azureConfig, query });
+  } else if (endpoint === EModelEndpoint.e2bAssistants) {
+    const assistants = await listE2BAssistants();
+    body = {
+      object: 'list',
+      data: assistants,
+      has_more: false,
+    };
   }
 
   if (req.user.role === SystemRoles.ADMIN) {
@@ -244,6 +328,8 @@ const fetchAssistants = async ({ req, res, overrideEndpoint }) => {
 
   body.data = filterAssistants({
     userId: req.user.id,
+    userRole: req.user.role,
+    userGroups: req.user.groups || [],
     assistants: body.data,
     assistantsConfig: appConfig.endpoints?.[endpoint],
   });
@@ -259,16 +345,71 @@ const fetchAssistants = async ({ req, res, overrideEndpoint }) => {
  * @param {Partial<TAssistantEndpoint>} params.assistantsConfig -  The assistant configuration.
  * @returns {Assistant[]} - The filtered list of assistants.
  */
-function filterAssistants({ assistants, userId, assistantsConfig }) {
-  const { supportedIds, excludedIds, privateAssistants } = assistantsConfig;
-  if (privateAssistants) {
-    return assistants.filter((assistant) => userId === assistant.metadata?.author);
-  } else if (supportedIds?.length) {
-    return assistants.filter((assistant) => supportedIds.includes(assistant.id));
-  } else if (excludedIds?.length) {
-    return assistants.filter((assistant) => !excludedIds.includes(assistant.id));
+// function filterAssistants({ assistants, userId, assistantsConfig }) {
+//   const { supportedIds, excludedIds } = assistantsConfig;
+
+//   if (supportedIds?.length) {
+//     return assistants.filter((assistant) => supportedIds.includes(assistant.id));
+//   } else if (excludedIds?.length) {
+//     return assistants.filter((assistant) => !excludedIds.includes(assistant.id));
+//   }
+
+//   return assistants;
+// }
+
+function filterAssistants({ assistants, userId, userRole, userGroups = [], assistantsConfig }) {
+  const { supportedIds, excludedIds } = assistantsConfig;
+
+  // ADMIN 用户可以看到所有助手
+  if (userRole === SystemRoles.ADMIN) {
+    if (supportedIds?.length) {
+      return assistants.filter((assistant) => supportedIds.includes(assistant.id));
+    } else if (excludedIds?.length) {
+      return assistants.filter((assistant) => !excludedIds.includes(assistant.id));
+    }
+    return assistants;
   }
-  return assistants;
+
+  // 普通用户过滤规则（基于 OpenAI metadata 字段）
+  const filteredAssistants = assistants.filter((assistant) => {
+      const authorId = toIdString(assistant.metadata?.author);
+    // 助手 metadata 中的 group（由这个服务器在保存时写入）
+    const group = assistant.metadata?.group;
+
+    // 自己创建的助手总是可见
+    if (userId === authorId) {
+      return true;
+    }
+
+    // 别人创建的助手
+    if (authorId && authorId !== userId) {
+      const role = assistant.metadata?.role;
+      const isAdminCreated = typeof role === 'string' && role.toUpperCase() === SystemRoles.ADMIN;
+
+      if (isAdminCreated) {
+        if (!group) return true; // ADMIN 全局助手（无分组限制，含空字符串和 null/undefined）
+        return userGroups.includes(group); // ADMIN 分组限制助手
+      }
+
+      // 普通用户的助手：设置了分组且用户属于该分组才可见
+      if (group && userGroups.includes(group)) return true;
+      return false;
+    }
+
+    // 没有作者信息的助手（比如使用 visibleTo 机制的旧数据）
+    if (assistant.metadata?.visibleTo) {
+      return Array.isArray(assistant.metadata.visibleTo) &&
+             assistant.metadata.visibleTo.includes(userId);
+    }
+    return false;
+  });
+
+  if (supportedIds?.length) {
+    return filteredAssistants.filter((assistant) => supportedIds.includes(assistant.id));
+  } else if (excludedIds?.length) {
+    return filteredAssistants.filter((assistant) => !excludedIds.includes(assistant.id));
+  }
+  return filteredAssistants;
 }
 
 module.exports = {
