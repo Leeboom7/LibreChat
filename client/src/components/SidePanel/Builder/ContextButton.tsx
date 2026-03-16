@@ -63,6 +63,7 @@ export default function ContextButton({
 
       if (currentAssistant) {
         setCurrentAssistantId(currentAssistant.id);
+        return;
       }
 
       setCurrentAssistantId(firstAssistant.id);

@@ -207,8 +207,8 @@ const createAssistant = async (req, res) => {
       id: `asst_${nanoid()}`,
       name,
       description,
-      instructions,
-      prompt: instructions, // Map instructions to prompt for Schema validation
+      instructions: instructions ?? '',
+      prompt: instructions ?? '', // Ensure required prompt always exists for schema validation
       author: req.user.id,
       model: model || 'gpt-4o', // Default model
       model_parameters: model_parameters || {},
@@ -318,7 +318,7 @@ const listAssistants = async (req, res) => {
     );
     
     // Map prompt to instructions for frontend compatibility
-    const mappedAssistants = visibleAssistants.map((assistant) => {
+    const mappedAssistants = await Promise.all(visibleAssistants.map(async (assistant) => {
       const metadata = buildVisibilityMetadata(assistant);
       const mapped = {
         ...(assistant.toObject ? assistant.toObject() : assistant),
@@ -342,9 +342,12 @@ const listAssistants = async (req, res) => {
       if (!mapped.data_sources) {
         mapped.data_sources = []; // ✨ Ensure data_sources exists
       }
+
+      // Provide file metadata for UI rendering (e.g., shared assistants viewed by other users)
+      await populateCodeFiles(assistant, mapped);
       
       return mapped;
-    });
+    }));
     
     // Return in the same format as OpenAI/Azure Assistants
     // Frontend expects { data: [...] }

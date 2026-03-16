@@ -12,19 +12,19 @@ export default function useSelectAssistant(endpoint: AssistantsEndpoint) {
   const assistantMap = useAssistantListMap((res) => mapAssistants(res.data));
 
   const onSelect = useCallback(
-    (value: string) => {
+    (value: string, model?: string) => {
       const assistant = assistantMap[endpoint]?.[value];
-      if (!assistant) {
+      if (!assistant && !model) {
         return;
       }
       const template: Partial<TPreset | TConversation> = {
         endpoint,
-        assistant_id: assistant.id,
-        model: assistant.model,
+        assistant_id: assistant?.id ?? value,
+        model: assistant?.model ?? model ?? '',
         conversationId: 'new',
       };
 
-      logger.log('conversation', 'Updating conversation with assistant', assistant);
+      logger.log('conversation', 'Updating conversation with assistant', assistant ?? value);
       if (isAssistantsEndpoint(conversation?.endpoint)) {
         const currentConvo = getDefaultConversation({
           conversation: { ...(conversation ?? {}) },

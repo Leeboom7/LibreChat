@@ -75,9 +75,11 @@ export default function AssistantSelect({
     [allTools],
   );
 
-  const query = useListAssistantsQuery(endpoint, undefined, {
-    select: (res) =>
-      res.data.map((_assistant) => {
+  const query = useListAssistantsQuery(endpoint);
+
+  const assistants = useMemo(
+    () =>
+      (query.data?.data ?? []).map((_assistant) => {
         let source = FileSources.openai;
         if (endpoint === EModelEndpoint.azureAssistants) {
           source = FileSources.azure;
@@ -105,6 +107,10 @@ export default function AssistantSelect({
 
         const handleFile = (file_id: string, list?: Array<[string, ExtendedFile]>) => {
           const file = fileMap?.[file_id];
+          const assistantWithCodeFiles = _assistant as unknown as {
+            code_files?: Array<[string, ExtendedFile]>;
+          };
+          const codeFileEntry = assistantWithCodeFiles.code_files?.find(([id]) => id === file_id)?.[1];
           if (file) {
             list?.push([
               file_id,
@@ -121,13 +127,26 @@ export default function AssistantSelect({
                 source,
               },
             ]);
+          } else if (codeFileEntry) {
+            list?.push([
+              file_id,
+              {
+                file_id,
+                type: codeFileEntry.type ?? '',
+                filepath: codeFileEntry.filepath ?? endpoint,
+                filename: codeFileEntry.filename ?? file_id,
+                size: codeFileEntry.size ?? 1,
+                progress: 1,
+                source,
+              },
+            ]);
           } else {
             list?.push([
               file_id,
               {
                 file_id,
                 type: '',
-                filename: '',
+                filename: file_id,
                 size: 1,
                 progress: 1,
                 filepath: endpoint,
@@ -166,11 +185,12 @@ export default function AssistantSelect({
 
         return assistant;
       }),
-  });
+    [documentsMap, endpoint, fileMap, query.data?.data],
+  );
 
   const onSelect = useCallback(
     (value: string) => {
-      const assistant = query.data?.find((assistant) => assistant.id === value);
+      const assistant = assistants.find((assistant) => assistant.id === value);
 
       createMutation.reset();
       if (!assistant) {
@@ -265,14 +285,13 @@ export default function AssistantSelect({
       setCurrentAssistantId(assistant.id);
     },
     [
-      query.data,
+      assistants,
       reset,
       setCurrentAssistantId,
       createMutation,
       endpoint,
       lastSelectedModels,
       toolkits,
-      documentsMap,
     ],
   );
 
@@ -283,7 +302,7 @@ export default function AssistantSelect({
       return;
     }
 
-    if (selectedAssistant !== '' && selectedAssistant != null && query.data) {
+    if (selectedAssistant !== '' && selectedAssistant != null && assistants.length > 0) {
       timerId = setTimeout(() => {
         lastSelectedAssistant.current = selectedAssistant;
         onSelect(selectedAssistant);
@@ -295,7 +314,7 @@ export default function AssistantSelect({
         clearTimeout(timerId);
       }
     };
-  }, [selectedAssistant, query.data, onSelect]);
+  }, [selectedAssistant, assistants, onSelect]);
 
   const createAssistant = localize('com_ui_create_assistant');
   return (
@@ -303,12 +322,14 @@ export default function AssistantSelect({
       value={!value ? createAssistant : value}
       setValue={createDropdownSetter(onSelect)}
       availableValues={
-        query.data ?? [
-          {
-            label: 'Loading...',
-            value: '',
-          },
-        ]
+        query.isLoading
+          ? [
+              {
+                label: 'Loading...',
+                value: '',
+              },
+            ]
+          : assistants
       }
       iconSide="left"
       showAbove={false}
