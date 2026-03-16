@@ -124,7 +124,7 @@ export default function FileRow({
 
             return (
               <div
-                key={index}
+                key={file.file_id || `${file.filename || 'file'}-${index}`}
                 style={{
                   flexBasis: '70px',
                   flexGrow: 0,

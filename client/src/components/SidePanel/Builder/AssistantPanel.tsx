@@ -282,7 +282,7 @@ export default function AssistantPanel({
               disabled={!assistant_id}
               onClick={(e) => {
                 e.preventDefault();
-                onSelectAssistant(assistant_id);
+                onSelectAssistant(assistant_id, activeModel);
               }}
             >
               {localize('com_ui_select')}
