@@ -99,6 +99,10 @@ const DisplayMessage = ({ text, isCreatedByUser, message, showCursor }: TDisplay
     () => showCursor === true && isSubmitting,
     [showCursor, isSubmitting],
   );
+  const showStreamingAnchor = useMemo(
+    () => showCursorState && !isCreatedByUser && text.length === 0,
+    [showCursorState, isCreatedByUser, text.length],
+  );
 
   const content = useMemo(() => {
     if (!isCreatedByUser) {
@@ -116,12 +120,13 @@ const DisplayMessage = ({ text, isCreatedByUser, message, showCursor }: TDisplay
         className={cn(
           'markdown prose message-content dark:prose-invert light w-full break-words',
           isSubmitting && 'submitting',
-          showCursorState && text.length > 0 && 'result-streaming',
+          showCursorState && 'result-streaming',
           isCreatedByUser && !enableUserMsgMarkdown && 'whitespace-pre-wrap',
           isCreatedByUser ? 'dark:text-gray-20' : 'dark:text-gray-100',
         )}
       >
         {content}
+        {showStreamingAnchor && <span aria-hidden="true" className="streaming-cursor-anchor" />}
       </div>
     </Container>
   );

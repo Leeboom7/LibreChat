@@ -64,13 +64,7 @@ const Markdown = memo(({ content = '', isLatestMessage }: TContentProps) => {
   ];
 
   if (isInitializing) {
-    return (
-      <div className="absolute">
-        <p className="relative">
-          <span className={isLatestMessage ? 'result-thinking' : ''} />
-        </p>
-      </div>
-    );
+    return null;
   }
 
   return (
