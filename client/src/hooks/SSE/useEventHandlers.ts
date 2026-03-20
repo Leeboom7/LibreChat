@@ -211,11 +211,16 @@ export default function useEventHandlers({
         lastAnnouncementTimeRef.current = currentTime;
       }
 
+      const currentMessages = getMessages?.() || [];
+      const existingMessage = currentMessages.find(m => m.messageId === initialResponse?.messageId);
+      const mergedMetrics = (existingMessage as any)?.e2bContextMetrics || (initialResponse as any)?.e2bContextMetrics;
+
       if (isRegenerate) {
         setMessages([
           ...messages,
           {
             ...initialResponse,
+            ...(mergedMetrics ? { e2bContextMetrics: mergedMetrics } : {}),
             text,
           },
         ]);
@@ -225,12 +230,13 @@ export default function useEventHandlers({
           userMessage,
           {
             ...initialResponse,
+            ...(mergedMetrics ? { e2bContextMetrics: mergedMetrics } : {}),
             text,
           },
         ]);
       }
     },
-    [setMessages, announcePolite, setIsSubmitting],
+    [setMessages, announcePolite, setIsSubmitting, getMessages],
   );
 
   const cancelHandler = useCallback(

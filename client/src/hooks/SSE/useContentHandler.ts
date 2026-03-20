@@ -32,6 +32,15 @@ export default function useContentHandler({ setMessages, getMessages }: TUseCont
       const { type, messageId, thread_id, conversationId, index } = data;
 
       const _messages = getMessages();
+      const existingResponse = _messages?.find((m) => m.messageId === messageId);
+      const initialResponseMessageId = submission.initialResponse?.messageId;
+      const existingInitialResponse = _messages?.find((m) => m.messageId === initialResponseMessageId);
+      const preservedMetrics =
+        (existingResponse as (TMessage & { e2bContextMetrics?: unknown }) | undefined)?.e2bContextMetrics ??
+        (existingInitialResponse as (TMessage & { e2bContextMetrics?: unknown }) | undefined)
+          ?.e2bContextMetrics ??
+        (submission.initialResponse as (TMessage & { e2bContextMetrics?: unknown }) | undefined)
+          ?.e2bContextMetrics;
       const messages =
         _messages?.filter((m) => m.messageId !== messageId).map((msg) => ({ ...msg, thread_id })) ??
         [];
@@ -43,11 +52,19 @@ export default function useContentHandler({ setMessages, getMessages }: TUseCont
       if (!response) {
         response = {
           ...(initialResponse as TMessage),
+          ...(existingResponse ?? {}),
+          ...(preservedMetrics != null ? { e2bContextMetrics: preservedMetrics } : {}),
           parentMessageId: userMessage?.messageId ?? '',
           conversationId,
           messageId,
           thread_id,
         };
+        messageMap.set(messageId, response);
+      } else if ((response as TMessage & { e2bContextMetrics?: unknown }).e2bContextMetrics == null && preservedMetrics != null) {
+        response = {
+          ...response,
+          e2bContextMetrics: preservedMetrics,
+        } as TMessage;
         messageMap.set(messageId, response);
       }
 

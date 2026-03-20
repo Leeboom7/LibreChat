@@ -3,6 +3,53 @@
 > 记录 E2B Data Analyst Agent 的每日开发进展、问题解决和关键决策。
 
 
+## 2026-03-20 (周五)
+
+### ✅ 上下文压缩前后端闭环收口
+
+### 主要工作
+1. **后端压缩判定收紧（historyBuilder）** ⭐⭐⭐
+   - 去除 fallback Unknown 摘要注入路径。
+   - 增加三类回退原因：`no-older-history`、`summary-unavailable`、`no-token-savings`。
+   - 仅当 `outputTokens < rawTokens` 时判定为压缩成功（`compressed=true`），避免压缩后 token 反增仍标记成功。
+
+2. **后端日志可观测性增强（controller）** ⭐⭐
+   - 保留并持续输出 `[E2B Assistant][ContextMetrics]`。
+   - 新增 `[E2B Assistant][ContextSummary]`：仅在 `summaryInserted=true` 时输出摘要正文，便于线上验证摘要真实内容。
+
+3. **前端 SSE 链路稳定性修复** ⭐⭐⭐
+   - 修复流式过程中 `e2bContextMetrics` 被覆盖丢失，导致卡片闪烁/消失的问题。
+   - 覆盖 `useEventHandlers`、`useContentHandler`、`useStepHandler` 三条事件路径，统一保留 metrics。
+   - 修复思考点位置错位（消息内容相对定位容器调整）。
+
+4. **压缩卡片展示策略最终确认**
+   - 卡片仅在 `compressed=true` 时展示（不展示 “Context Not Compressed”）。
+   - 引入 `messageId` 级缓存降低流式帧短暂缺字段造成的抖动。
+
+5. **端到端验证（真实会话 + 日志 + DB）**
+   - cadence=20 触发后出现 `compressed=true`，并记录真实节省（示例：`11479 -> 9332`, saved=2147, 18.7%）。
+   - history 首条为 `Prior Conversation Summary (compressed)`，确认 summary 在 user prompt 前注入。
+   - MongoDB 中无 summary 正文落库记录，确认 summary 为运行时拼接到 LLM 输入。
+
+### 验证结果
+- ✅ 后端压缩触发、回退与成功判定逻辑符合预期。
+- ✅ 前端压缩卡片在流式与完成态表现稳定。
+- ✅ 摘要内容可在日志中直接核验。
+
+### 技术细节
+**涉及文件（核心）**:
+1. `api/server/services/Agents/e2bAgent/historyBuilder.js`
+2. `api/server/routes/e2bAssistants/controller.js`
+3. `client/src/hooks/SSE/useEventHandlers.ts`
+4. `client/src/hooks/SSE/useContentHandler.ts`
+5. `client/src/hooks/SSE/useStepHandler.ts`
+6. `client/src/components/Chat/Messages/ContextCompressionCard.tsx`
+7. `client/src/components/Chat/Messages/MessageParts.tsx`
+8. `client/src/components/Chat/Messages/ui/MessageRender.tsx`
+
+---
+
+
 ## 2026-03-09 (周一)
 
 ### 🌐 管理端与 E2B 提示文案三语适配收尾

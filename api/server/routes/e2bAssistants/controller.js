@@ -703,6 +703,7 @@ const chat = async (req, res) => {
 
     // Load conversation history if this is a continuing conversation
     let history = [];
+    let contextMetrics = null;
     // DIAGNOSTIC: Log whether conversationId was provided by frontend or generated
     logger.info(`[E2B Assistant] conversationId from frontend: ${conversationId || '(none - new conversation)'}, finalConversationId: ${finalConversationId}, isNewConversation: ${!conversationId}`);
     if (conversationId) {
@@ -710,25 +711,68 @@ const chat = async (req, res) => {
         // Always filter by user to prevent cross-user contamination
         const dbMessages = await getMessages({ conversationId, user: req.user.id });
         logger.info(`[E2B Assistant] getMessages(${conversationId}) returned ${dbMessages.length} raw messages (user=${req.user.id})`);
+
+        const tokenModel = openai.azureDeployment || assistant.model || 'gpt-4o';
+        const userInputTokens = await countTokens(text || '', tokenModel);
+        const estimatedSystemTokens = Number(contextManagementConfig.estimatedSystemTokens) || 3000;
+        const compactionSummaryMaxTokens =
+          Number(contextManagementConfig.compactionSummaryMaxTokens) || 1200;
+        const configuredSummaryRefreshTurns = Number(contextManagementConfig.summaryRefreshTurns);
+
+        const summarizeOlderHistory = async ({ prompt, maxTokens }) => {
+          try {
+            const completion = await openai.chat.completions.create({
+              model: tokenModel,
+              messages: [{ role: 'user', content: prompt }],
+              max_tokens: maxTokens,
+            });
+            return completion?.choices?.[0]?.message?.content?.trim() || '';
+          } catch (summaryError) {
+            logger.warn(`[E2B Assistant] Compaction summary generation failed: ${summaryError.message}`);
+            return '';
+          }
+        };
         
         const historyBuildResult = await buildE2BHistory({
           dbMessages,
           currentUserMessageId: userMessageId,
-          model: assistant.model || 'gpt-4o',
+          model: tokenModel,
           config: {
-            messageWindowSize: Number(contextManagementConfig.messageWindowSize) || 10,
-            historyMaxTokens: Number(contextManagementConfig.historyMaxTokens) || 12000,
-            summarySnippetChars: Number(contextManagementConfig.summarySnippetChars) || 220,
-            summaryMaxUserItems: Number(contextManagementConfig.summaryMaxUserItems) || 6,
-            summaryMaxAssistantItems: Number(contextManagementConfig.summaryMaxAssistantItems) || 5,
+            messageWindowSize: Number(contextManagementConfig.messageWindowSize) || 24,
+            estimatedSystemTokens,
+            currentUserTokens: userInputTokens,
+            compactionSummaryMaxTokens,
+            ...(Number.isFinite(configuredSummaryRefreshTurns) && configuredSummaryRefreshTurns > 0
+              ? { summaryRefreshTurns: configuredSummaryRefreshTurns }
+              : {}),
           },
+          summarizeOlderHistory,
         });
         history = historyBuildResult.history;
-
-        const userInputTokens = await countTokens(text || '', assistant.model || 'gpt-4o');
+        contextMetrics = historyBuildResult.stats;
         logger.info(
-          `[E2B Assistant][ContextMetrics] rawMessages=${historyBuildResult.stats.rawMessages}, outputMessages=${historyBuildResult.stats.outputMessages}, rawTokens=${historyBuildResult.stats.rawTokens}, historyTokens=${historyBuildResult.stats.outputTokens}, userInputTokens=${userInputTokens}, compressed=${historyBuildResult.stats.compressed}, summaryInserted=${historyBuildResult.stats.summaryInserted}`,
+          `[E2B Assistant][ContextMetrics] compressed=${historyBuildResult.stats.compressed}, reason=${historyBuildResult.stats.compressionReason}, summaryInserted=${historyBuildResult.stats.summaryInserted}, turns=${historyBuildResult.stats.turnCount}, messages(raw->used)=${historyBuildResult.stats.rawMessages}->${historyBuildResult.stats.outputMessages}, tokens(history raw->used)=${historyBuildResult.stats.rawTokens}->${historyBuildResult.stats.outputTokens}, savedTokens=${historyBuildResult.stats.savedTokens}, savedPercent=${historyBuildResult.stats.savedPercent}%, promptEstimate(raw->used)=${historyBuildResult.stats.estimatedPromptTokensRaw}->${historyBuildResult.stats.estimatedPromptTokensUsed}, cadenceEvery=${historyBuildResult.stats.summaryRefreshTurns}, userInputTokens=${userInputTokens}, windowSize=${historyBuildResult.stats.messageWindowSize}`,
         );
+        if (historyBuildResult.stats.summaryInserted) {
+          const summaryMessage = historyBuildResult.history.find(
+            (msg) =>
+              msg.role === 'system' &&
+              typeof msg.content === 'string' &&
+              msg.content.includes('## Prior Conversation Summary (compressed)'),
+          );
+          logger.info(
+            `[E2B Assistant][ContextSummary] ${summaryMessage?.content || '(summary message missing)'}`,
+          );
+        }
+
+        sendEvent(res, {
+          event: 'on_context_metrics',
+          data: {
+            runId: responseMessageId,
+            context_metrics: historyBuildResult.stats,
+          },
+        });
+        if (res.flush) res.flush();
         
         // Check if files were uploaded in this conversation (either now or previously)
         let conversationFiles = files || [];
@@ -895,6 +939,7 @@ const chat = async (req, res) => {
       user: req.user.id,
       endpoint: 'e2bAssistants',
       model: assistant.model || 'gpt-4o',
+      ...(contextMetrics ? { e2bContextMetrics: contextMetrics } : {}),
     };
 
     // Save response message to database

@@ -577,6 +577,7 @@ export const tMessageSchema = z.object({
   feedback: feedbackSchema.optional(),
   /** metadata */
   metadata: z.record(z.unknown()).optional(),
+  e2bContextMetrics: z.unknown().optional(),
 });
 
 export type MemoryArtifact = {

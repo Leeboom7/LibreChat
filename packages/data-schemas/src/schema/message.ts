@@ -114,6 +114,10 @@ const messageSchema: Schema<IMessage> = new Schema(
       type: String,
     },
     metadata: { type: mongoose.Schema.Types.Mixed },
+    e2bContextMetrics: {
+      type: mongoose.Schema.Types.Mixed,
+      required: false,
+    },
     attachments: { type: [{ type: mongoose.Schema.Types.Mixed }], default: undefined },
     /*
     attachments: {

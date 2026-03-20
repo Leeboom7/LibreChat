@@ -4,6 +4,7 @@ import { useRecoilValue } from 'recoil';
 import { type TMessage } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon } from '~/common';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
+import ContextCompressionCard from '~/components/Chat/Messages/ContextCompressionCard';
 import PlaceholderRow from '~/components/Chat/Messages/ui/PlaceholderRow';
 import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
@@ -169,30 +170,36 @@ const MessageRender = memo(
 
           <div className="flex flex-col gap-1">
             <div className="flex max-w-full flex-grow flex-col gap-0">
-              <MessageContext.Provider
-                value={{
-                  messageId: msg.messageId,
-                  conversationId: conversation?.conversationId,
-                  isExpanded: false,
-                  isSubmitting: effectiveIsSubmitting,
-                  isLatestMessage,
-                }}
-              >
-                <MessageContent
-                  ask={ask}
-                  edit={edit}
-                  isLast={isLast}
-                  text={msg.text || ''}
-                  message={msg}
-                  enterEdit={enterEdit}
-                  error={!!(msg.error ?? false)}
-                  isSubmitting={effectiveIsSubmitting}
-                  unfinished={msg.unfinished ?? false}
-                  isCreatedByUser={msg.isCreatedByUser ?? true}
-                  siblingIdx={siblingIdx ?? 0}
-                  setSiblingIdx={setSiblingIdx ?? (() => ({}))}
-                />
-              </MessageContext.Provider>
+              <ContextCompressionCard
+                messageId={msg.messageId}
+                metrics={msg.e2bContextMetrics as any}
+              />
+              <div className="relative flex w-full flex-col">
+                <MessageContext.Provider
+                  value={{
+                    messageId: msg.messageId,
+                    conversationId: conversation?.conversationId,
+                    isExpanded: false,
+                    isSubmitting: effectiveIsSubmitting,
+                    isLatestMessage,
+                  }}
+                >
+                  <MessageContent
+                    ask={ask}
+                    edit={edit}
+                    isLast={isLast}
+                    text={msg.text || ''}
+                    message={msg}
+                    enterEdit={enterEdit}
+                    error={!!(msg.error ?? false)}
+                    isSubmitting={effectiveIsSubmitting}
+                    unfinished={msg.unfinished ?? false}
+                    isCreatedByUser={msg.isCreatedByUser ?? true}
+                    siblingIdx={siblingIdx ?? 0}
+                    setSiblingIdx={setSiblingIdx ?? (() => ({}))}
+                  />
+                </MessageContext.Provider>
+              </div>
             </div>
 
             {hasNoChildren && (isSubmittingFamily === true || effectiveIsSubmitting) ? (

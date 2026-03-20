@@ -35,6 +35,10 @@ type TStepEvent = {
     | {
         runId?: string;
         message: string;
+      }
+    | {
+        runId?: string;
+        context_metrics?: Record<string, unknown>;
       };
 };
 
@@ -229,6 +233,7 @@ export default function useStepHandler({
 
         if (!response) {
           const responseMessage = messages[messages.length - 1] as TMessage;
+          const mergedMetrics = (submission?.initialResponse as any)?.e2bContextMetrics;
 
           response = {
             ...responseMessage,
@@ -236,6 +241,7 @@ export default function useStepHandler({
             conversationId: userMessage.conversationId,
             messageId: responseMessageId,
             content: initialContent,
+            ...(mergedMetrics ? { e2bContextMetrics: mergedMetrics } : {}),
           };
 
           messageMap.current.set(responseMessageId, response);
@@ -453,6 +459,50 @@ export default function useStepHandler({
 
           setMessages(updatedMessages);
         }
+      } else if (event === 'on_context_metrics') {
+        const metricsData = data as { runId?: string; context_metrics?: Record<string, unknown> };
+        const responseMessageId = metricsData.runId ?? submission?.initialResponse?.messageId ?? '';
+        const initialResponseId = submission?.initialResponse?.messageId ?? '';
+
+        if (!responseMessageId || metricsData.context_metrics == null) {
+          return;
+        }
+
+        const currentMessages = getMessages() || [];
+        const candidateIds = Array.from(new Set([responseMessageId, initialResponseId].filter(Boolean)));
+        let targetMessage = candidateIds
+          .map((id) => messageMap.current.get(id))
+          .find((msg): msg is TMessage => msg != null);
+
+        if (!targetMessage) {
+          targetMessage = currentMessages.find((msg) => candidateIds.includes(msg.messageId));
+        }
+
+        if (!targetMessage) {
+          console.warn(`[E2B UI] Cannot find target message for context metrics. responseMessageId=${responseMessageId}`);
+          return;
+        }
+
+        const updatedMessage = {
+          ...targetMessage,
+          e2bContextMetrics: metricsData.context_metrics,
+        } as TMessage;
+
+        for (const id of candidateIds) {
+          messageMap.current.set(id, updatedMessage);
+        }
+        messageMap.current.set(updatedMessage.messageId, updatedMessage);
+        
+        if (submission?.initialResponse) {
+          (submission.initialResponse as any).e2bContextMetrics = metricsData.context_metrics;
+        }
+
+        const updatedMessages = currentMessages.map((msg) =>
+          msg.messageId === updatedMessage.messageId || candidateIds.includes(msg.messageId)
+            ? updatedMessage
+            : msg,
+        );
+        setMessages(updatedMessages);
       }
 
       return () => {
