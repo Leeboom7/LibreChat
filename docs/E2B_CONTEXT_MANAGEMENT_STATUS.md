@@ -1,6 +1,6 @@
 # E2B 上下文管理实施状态（Phase1 + Phase2）
 
-更新时间：2026-03-13
+更新时间：2026-03-20
 
 ## 1. 已实现内容
 
@@ -28,9 +28,40 @@
 
 - 当前策略行为：
   1. 历史消息先做文本清洗（去 UUID 噪声）。
-  2. 短会话：直接透传。
-  3. 长会话：保留最近窗口 + 生成结构化摘要（system 消息）。
-  4. 超预算时继续裁剪最旧非 system 消息，并在必要时压缩摘要文本。
+  2. 近期窗口优先：始终保留最近窗口原文（短期连贯性优先）。
+  3. 压缩触发改为简化策略：
+      - 每 `summaryRefreshTurns` 轮重做摘要（默认 20 轮）。
+  4. 触发压缩时，`older history` 通过一次模型 compaction prompt 生成结构化摘要（5 段模板）：
+    - User Goal
+    - Completed Steps
+    - Key Conclusions
+    - Current File/Data State
+    - Pending Items
+  5. `recent window`（默认 24 条）保留原文，不参与摘要改写。
+  6. 压缩结果直接使用“摘要 + recent window”结构，不再做额外二次裁剪。
+
+## 1.3 2026-03-20 收口：前后端压缩链路完成
+
+本轮已完成压缩能力在后端与前端的闭环收口，并完成真实会话验证。
+
+- 后端压缩判定加固（historyBuilder）：
+  1. 去除 fallback Unknown 摘要注入路径。
+  2. 新增回退条件：`no-older-history`、`summary-unavailable`、`no-token-savings`。
+  3. 仅在 `outputTokens < rawTokens` 时标记 `compressed=true`，避免“伪压缩”。
+
+- 后端可观测性增强（controller）：
+  1. 保留 `[E2B Assistant][ContextMetrics]` 指标日志。
+  2. 新增 `[E2B Assistant][ContextSummary]`，在 `summaryInserted=true` 时输出摘要正文，便于线上核对实际摘要内容。
+
+- 前端流式可视化与稳定性修复：
+  1. 修复 SSE 流式过程中 `e2bContextMetrics` 丢失导致卡片消失的问题（message/content/step handler 全链路保留）。
+  2. 修复思考点定位错位（相对定位容器调整）。
+  3. 压缩卡片改为“仅 `compressed=true` 显示”，并使用 `messageId` 级缓存减轻流式帧抖动。
+
+- 真实会话验证结论：
+  1. 已验证触发 cadence 后，history 首条为 `Prior Conversation Summary (compressed)` system message。
+  2. 已验证最近一次压缩出现真实 token 降幅（示例：`11479 -> 9332`，节省 `2147`，`18.7%`）。
+  3. 已验证数据库不落库 summary 正文，summary 为运行时注入到 LLM history。
 
 ---
 
@@ -38,18 +69,41 @@
 
 当前通过 `contextManagement` 配置读取，未配置时使用默认值：
 
-- `messageWindowSize`: 10
-- `historyMaxTokens`: 12000
-- `summarySnippetChars`: 220
-- `summaryMaxUserItems`: 6
-- `summaryMaxAssistantItems`: 5
+- `messageWindowSize`: 24
+- `summaryRefreshTurns`: 20
+- `estimatedSystemTokens`: 3000
+- `compactionSummaryMaxTokens`: 1200
 - `reserveOutputTokens`: 3000
 - `toolObservationMaxChars`: 6000
 
 说明：
 
-- `reserveOutputTokens` 与 `toolObservationMaxChars` 目前已纳入埋点与配置读取。
+- `reserveOutputTokens` 与 `toolObservationMaxChars` 目前已纳入 Agent 层埋点与配置读取。
 - 真正用于工具 observation 压缩将在 Phase3 实施。
+
+### 2.0 最近原文保留规则（补充）
+
+- `messageWindowSize` 的单位是“消息条数”，不是“轮数”。
+- 当前默认 `messageWindowSize = 24`，通常约等于最近 12 轮原文（按 1 轮约 2 条消息估算）。
+- 触发压缩时，不是对上一次摘要结果继续叠加，而是每次都从数据库历史重建：
+  - 更早段历史进入摘要。
+  - 最近 24 条消息保持原文。
+- 示例（按常见 1 轮≈2 条消息）：
+  - 在第 41 轮请求触发压缩时，历史约有前 40 轮。
+  - 其中前约 28 轮进入摘要，后约 12 轮保留原文。
+
+---
+
+## 2.1 前端可视化（新增）
+
+已支持在对话消息中展示压缩过程状态卡片（基于 SSE 实时事件）。
+
+- 事件：`on_context_metrics`
+- 来源：`controller.chat` 在 history 构建后发送
+- 展示内容：
+  - 仅在压缩时展示 `Context Compressed`（`compressed=true`）
+
+备注：详细指标（触发原因、节省 token、prompt 估算、轮次等）统一保留在后端日志中。
 
 ---
 
@@ -151,3 +205,39 @@ System Context 瘦身：
 1. 增加真实会话回放测试（从数据库抽样匿名会话）。
 2. 落地 Phase3，并与 Phase2 联合评测“降本不降质”。
 3. 为关键开关增加环境配置与发布灰度策略。
+
+---
+
+## 6. 策略复盘与优化方向（结合 OpenCode）
+
+### 6.1 修改前风险复盘（已识别）
+
+旧策略曾包含 `promptCompressionTokens` 触发条件。若在第 60 轮时同时满足：
+
+- 命中 cadence（例如每 20 轮）
+- 且 `estimatedPromptTokens` 持续高于阈值（例如 > 60000）
+
+则会出现“本轮压缩后，下轮仍满足阈值，再次触发压缩”的高频压缩风险。
+
+### 6.2 当前策略结论（已落地）
+
+当前已切换为“仅 cadence 触发压缩”，移除了 `promptCompressionTokens` 作为触发器，避免阈值长期超标导致每轮重压缩。
+
+### 6.3 结合 OpenCode 的下一步优化
+
+参考 OpenCode 的 `isOverflow + prune + process(compaction)` 思路，建议采用双层治理：
+
+1. 常规层：维持 cadence 压缩（稳定、可预测）。
+2. 兜底层：仅在“接近模型极限或真实溢出错误”时触发 overflow compaction（紧急救援，不常态触发）。
+3. 增量层：引入 Phase3 的 tool observation prune/compress，优先削减长工具输出。
+
+### 6.4 是否还需要兜底
+
+需要。建议保留“溢出兜底”，但不恢复“常规阈值每轮判断”。
+
+- 推荐触发方式：
+  - 真实 provider context overflow 错误；或
+  - 预估 prompt 接近上限并超过保留缓冲（reserved buffer）时。
+- 推荐行为：
+  - 先执行一次紧急 compaction；
+  - 记录最近一次紧急压缩轮次，设置最小冷却窗口，避免连续抖动。

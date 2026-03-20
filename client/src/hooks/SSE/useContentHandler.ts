@@ -14,6 +14,15 @@ import type {
 } from 'librechat-data-provider';
 import { addFileToCache } from '~/utils';
 
+const pickFirstNonEmptyString = (...values: Array<string | null | undefined>) => {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value;
+    }
+  }
+  return undefined;
+};
+
 type TUseContentHandler = {
   setMessages: (messages: TMessage[]) => void;
   getMessages: () => TMessage[] | undefined;
@@ -32,6 +41,15 @@ export default function useContentHandler({ setMessages, getMessages }: TUseCont
       const { type, messageId, thread_id, conversationId, index } = data;
 
       const _messages = getMessages();
+      const existingResponse = _messages?.find((m) => m.messageId === messageId);
+      const initialResponseMessageId = submission.initialResponse?.messageId;
+      const existingInitialResponse = _messages?.find((m) => m.messageId === initialResponseMessageId);
+      const preservedMetrics =
+        (existingResponse as (TMessage & { e2bContextMetrics?: unknown }) | undefined)?.e2bContextMetrics ??
+        (existingInitialResponse as (TMessage & { e2bContextMetrics?: unknown }) | undefined)
+          ?.e2bContextMetrics ??
+        (submission.initialResponse as (TMessage & { e2bContextMetrics?: unknown }) | undefined)
+          ?.e2bContextMetrics;
       const messages =
         _messages?.filter((m) => m.messageId !== messageId).map((msg) => ({ ...msg, thread_id })) ??
         [];
@@ -41,12 +59,40 @@ export default function useContentHandler({ setMessages, getMessages }: TUseCont
 
       let response = messageMap.get(messageId);
       if (!response) {
+        const sender = pickFirstNonEmptyString(existingResponse?.sender, initialResponse?.sender);
+        const model = pickFirstNonEmptyString(existingResponse?.model, initialResponse?.model);
+        const iconURL = pickFirstNonEmptyString(existingResponse?.iconURL, initialResponse?.iconURL);
+
         response = {
           ...(initialResponse as TMessage),
+          ...(existingResponse ?? {}),
+          ...(preservedMetrics != null ? { e2bContextMetrics: preservedMetrics } : {}),
+          ...(sender != null ? { sender } : {}),
+          ...(model != null ? { model } : {}),
+          ...(iconURL != null ? { iconURL } : {}),
           parentMessageId: userMessage?.messageId ?? '',
           conversationId,
           messageId,
           thread_id,
+        };
+        messageMap.set(messageId, response);
+      } else if ((response as TMessage & { e2bContextMetrics?: unknown }).e2bContextMetrics == null && preservedMetrics != null) {
+        response = {
+          ...response,
+          e2bContextMetrics: preservedMetrics,
+        } as TMessage;
+        messageMap.set(messageId, response);
+      }
+
+      const sender = pickFirstNonEmptyString(response.sender, existingResponse?.sender, initialResponse?.sender);
+      const model = pickFirstNonEmptyString(response.model, existingResponse?.model, initialResponse?.model);
+      const iconURL = pickFirstNonEmptyString(response.iconURL, existingResponse?.iconURL, initialResponse?.iconURL);
+      if (sender !== response.sender || model !== response.model || iconURL !== response.iconURL) {
+        response = {
+          ...response,
+          ...(sender != null ? { sender } : {}),
+          ...(model != null ? { model } : {}),
+          ...(iconURL != null ? { iconURL } : {}),
         };
         messageMap.set(messageId, response);
       }

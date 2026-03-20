@@ -1,6 +1,6 @@
 import throttle from 'lodash/throttle';
 import { useEffect, useRef, useCallback, useMemo } from 'react';
-import { Constants, isAssistantsEndpoint, isAgentsEndpoint } from 'librechat-data-provider';
+import { Constants, isAgentsEndpoint } from 'librechat-data-provider';
 import type { TMessageProps } from '~/common';
 import { useMessagesViewContext, useAssistantsMapContext, useAgentsMapContext } from '~/Providers';
 import { getTextKey, TEXT_KEY_DIVIDER, logger } from '~/utils';
@@ -97,15 +97,15 @@ export default function useMessageHelpers(props: TMessageProps) {
   );
 
   const assistant = useMemo(() => {
-    if (!isAssistantsEndpoint(conversation?.endpoint)) {
+    const endpointKey = conversation?.endpoint ?? '';
+    const modelKey = message?.model ?? conversation?.model ?? '';
+
+    if (!endpointKey || !assistantMap?.[endpointKey]) {
       return undefined;
     }
 
-    const endpointKey = conversation?.endpoint ?? '';
-    const modelKey = message?.model ?? '';
-
-    return assistantMap?.[endpointKey] ? assistantMap[endpointKey][modelKey] : undefined;
-  }, [conversation?.endpoint, message?.model, assistantMap]);
+    return assistantMap[endpointKey][modelKey];
+  }, [conversation?.endpoint, conversation?.model, message?.model, assistantMap]);
 
   const agent = useMemo(() => {
     if (!isAgentsEndpoint(conversation?.endpoint)) {

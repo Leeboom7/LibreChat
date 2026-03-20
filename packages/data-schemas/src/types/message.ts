@@ -38,6 +38,7 @@ export interface IMessage extends Document {
   thread_id?: string;
   iconURL?: string;
   metadata?: Record<string, unknown>;
+  e2bContextMetrics?: unknown;
   attachments?: unknown[];
   expiredAt?: Date;
   createdAt?: Date;

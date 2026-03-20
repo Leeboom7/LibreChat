@@ -39,7 +39,6 @@ class E2BDataAnalystAgent {
     this.assistant = assistant;
     this.files = files; // Store files
     this.contextConfig = {
-      historyMaxTokens: Number(contextConfig?.historyMaxTokens) || 12000,
       reserveOutputTokens: Number(contextConfig?.reserveOutputTokens) || 3000,
       toolObservationMaxChars: Number(contextConfig?.toolObservationMaxChars) || 6000,
     };
@@ -277,7 +276,7 @@ class E2BDataAnalystAgent {
         }
         const estimatedPromptTokens = systemTokens + historyTokens + userTokens;
         logger.info(
-          `[E2BAgent][TokenMetrics] model=${tokenModel}, system=${systemTokens}, history=${historyTokens}, user=${userTokens}, estimatedPrompt=${estimatedPromptTokens}, historyBudget=${this.contextConfig.historyMaxTokens}, reserveOutput=${this.contextConfig.reserveOutputTokens}, toolObservationMaxChars=${this.contextConfig.toolObservationMaxChars}`,
+          `[E2BAgent][TokenMetrics] model=${tokenModel}, system=${systemTokens}, history=${historyTokens}, user=${userTokens}, estimatedPrompt=${estimatedPromptTokens}, reserveOutput=${this.contextConfig.reserveOutputTokens}, toolObservationMaxChars=${this.contextConfig.toolObservationMaxChars}`,
         );
       } catch (tokenError) {
         logger.warn(`[E2BAgent][TokenMetrics] failed to estimate tokens: ${tokenError.message}`);

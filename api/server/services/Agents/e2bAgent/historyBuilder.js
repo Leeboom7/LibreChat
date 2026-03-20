@@ -3,39 +3,59 @@ const { countTokens } = require('@librechat/api');
 const UUID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}__/gi;
 
 const DEFAULTS = {
-  messageWindowSize: 10,
-  historyMaxTokens: 12000,
-  summarySnippetChars: 220,
-  summaryMaxUserItems: 6,
-  summaryMaxAssistantItems: 5,
+  messageWindowSize: 24,
+  summaryRefreshTurns: 20,
+  estimatedSystemTokens: 3000,
+  currentUserTokens: 0,
+  compactionSummaryMaxTokens: 1200,
 };
 
 const cleanText = (text) => (text || '').replace(UUID_PATTERN, '').replace(/\s+/g, ' ').trim();
 
-const clip = (text, maxChars) => {
-  if (!text) {
-    return '';
-  }
-  return text.length > maxChars ? `${text.slice(0, maxChars)}...` : text;
+const formatPromptHistory = (messages) =>
+  messages
+    .map((msg, idx) => {
+      const role = msg.role === 'user' ? 'USER' : 'ASSISTANT';
+      return `[${idx + 1}] ${role}: ${msg.content}`;
+    })
+    .join('\n\n');
+
+const buildCompactionPrompt = ({ olderHistory, recentHistory }) => {
+  const olderText = formatPromptHistory(olderHistory);
+  const recentText = formatPromptHistory(recentHistory);
+
+  return `You are compacting earlier chat history for a coding/data-analysis assistant.
+
+Task:
+- Summarize ONLY the OLDER HISTORY section into structured memory.
+- Use RECENT WINDOW only as reference to avoid contradiction.
+- Do NOT rewrite turn-by-turn details from RECENT WINDOW.
+
+Output rules:
+- Output plain Markdown.
+- Use exactly these sections in this exact order:
+  1) ## User Goal
+  2) ## Completed Steps
+  3) ## Key Conclusions
+  4) ## Current File/Data State
+  5) ## Pending Items
+- Keep each section concise and actionable.
+- If uncertain, write Unknown explicitly.
+
+OLDER HISTORY:
+${olderText}
+
+RECENT WINDOW (REFERENCE ONLY):
+${recentText}`;
 };
 
-const formatSummary = ({ userItems, assistantItems, firstUserGoal }) => {
-  const lines = [];
-  lines.push('## Prior Conversation Summary (compressed)');
-  if (firstUserGoal) {
-    lines.push(`- Initial goal: ${firstUserGoal}`);
-  }
-  if (userItems.length > 0) {
-    lines.push('- Earlier user requests:');
-    userItems.forEach((item, idx) => lines.push(`  ${idx + 1}. ${item}`));
-  }
-  if (assistantItems.length > 0) {
-    lines.push('- Earlier assistant outcomes:');
-    assistantItems.forEach((item, idx) => lines.push(`  ${idx + 1}. ${item}`));
-  }
-  lines.push('- Keep this as compressed memory; rely on recent turns for exact details.');
-  return lines.join('\n');
-};
+const toSummaryMessage = (summaryContent) => ({
+  role: 'system',
+  content: `## Prior Conversation Summary (compressed)
+${summaryContent}
+
+- Keep this as compressed memory; rely on recent turns for exact details.`,
+});
 
 async function countHistoryTokens(history, model) {
   let total = 0;
@@ -45,7 +65,13 @@ async function countHistoryTokens(history, model) {
   return total;
 }
 
-async function buildE2BHistory({ dbMessages, currentUserMessageId, model, config = {} }) {
+async function buildE2BHistory({
+  dbMessages,
+  currentUserMessageId,
+  model,
+  config = {},
+  summarizeOlderHistory,
+}) {
   const opts = {
     ...DEFAULTS,
     ...config,
@@ -62,8 +88,17 @@ async function buildE2BHistory({ dbMessages, currentUserMessageId, model, config
 
   const rawHistory = normalized.map(({ role, content }) => ({ role, content }));
   const rawTokenEstimate = await countHistoryTokens(rawHistory, model);
+  const turnCount = Math.floor(rawHistory.length / 2);
+  const estimatedPromptTokensRaw =
+    rawTokenEstimate + Number(opts.estimatedSystemTokens || 0) + Number(opts.currentUserTokens || 0);
+  const cadenceTurns =
+    Math.max(1, Number(opts.summaryRefreshTurns)) || DEFAULTS.summaryRefreshTurns;
+  const triggerByCadence = turnCount >= cadenceTurns && turnCount % cadenceTurns === 0;
+  const shouldCompress = triggerByCadence;
 
-  if (rawHistory.length <= opts.messageWindowSize && rawTokenEstimate <= opts.historyMaxTokens) {
+  const getCompressionReason = (reason) => reason;
+
+  if (!shouldCompress) {
     return {
       history: rawHistory,
       stats: {
@@ -71,69 +106,109 @@ async function buildE2BHistory({ dbMessages, currentUserMessageId, model, config
         outputMessages: rawHistory.length,
         rawTokens: rawTokenEstimate,
         outputTokens: rawTokenEstimate,
+        savedTokens: 0,
+        savedPercent: 0,
+        turnCount,
+        estimatedPromptTokensRaw,
+        estimatedPromptTokensUsed: estimatedPromptTokensRaw,
+        summaryRefreshTurns: cadenceTurns,
+        messageWindowSize: opts.messageWindowSize,
+        compressionReason: getCompressionReason('below-threshold'),
         compressed: false,
         summaryInserted: false,
       },
     };
   }
 
-  const firstUser = normalized.find((m) => m.role === 'user');
-  const firstAnchor = firstUser
-    ? { role: 'user', content: clip(firstUser.content, opts.summarySnippetChars) }
-    : null;
-
-  const tail = normalized
-    .slice(-opts.messageWindowSize)
-    .map(({ role, content }) => ({ role, content }));
-
+  const tail = normalized.slice(-opts.messageWindowSize).map(({ role, content }) => ({ role, content }));
   const cutoffIndex = Math.max(0, normalized.length - opts.messageWindowSize);
-  const older = normalized.slice(0, cutoffIndex);
+  const older = normalized.slice(0, cutoffIndex).map(({ role, content }) => ({ role, content }));
 
-  const olderUserItems = older
-    .filter((m) => m.role === 'user')
-    .slice(-opts.summaryMaxUserItems)
-    .map((m) => clip(m.content, opts.summarySnippetChars));
-
-  const olderAssistantItems = older
-    .filter((m) => m.role === 'assistant')
-    .slice(-opts.summaryMaxAssistantItems)
-    .map((m) => clip(m.content, opts.summarySnippetChars));
-
-  const summaryContent = formatSummary({
-    userItems: olderUserItems,
-    assistantItems: olderAssistantItems,
-    firstUserGoal: firstAnchor?.content,
-  });
-
-  const summaryMessage = { role: 'system', content: summaryContent };
-
-  const output = [];
-  if (firstAnchor && (!tail[0] || tail[0].content !== firstAnchor.content)) {
-    output.push(firstAnchor);
-  }
-  output.push(summaryMessage, ...tail);
-
-  let outputTokens = await countHistoryTokens(output, model);
-
-  // Budget trimming: remove oldest non-system message first, keep summary and the most recent turns.
-  while (outputTokens > opts.historyMaxTokens && output.length > 2) {
-    const removableIndex = output.findIndex((msg, idx) => idx > 0 && msg.role !== 'system');
-    if (removableIndex === -1) {
-      break;
-    }
-    output.splice(removableIndex, 1);
-    outputTokens = await countHistoryTokens(output, model);
+  if (older.length === 0) {
+    return {
+      history: rawHistory,
+      stats: {
+        rawMessages: rawHistory.length,
+        outputMessages: rawHistory.length,
+        rawTokens: rawTokenEstimate,
+        outputTokens: rawTokenEstimate,
+        savedTokens: 0,
+        savedPercent: 0,
+        turnCount,
+        estimatedPromptTokensRaw,
+        estimatedPromptTokensUsed: estimatedPromptTokensRaw,
+        summaryRefreshTurns: cadenceTurns,
+        messageWindowSize: opts.messageWindowSize,
+        compressionReason: getCompressionReason('no-older-history'),
+        compressed: false,
+        summaryInserted: false,
+      },
+    };
   }
 
-  // If still over budget, shorten summary content.
-  if (outputTokens > opts.historyMaxTokens) {
-    const summaryIdx = output.findIndex((msg) => msg.role === 'system' && msg.content.includes('Prior Conversation Summary'));
-    if (summaryIdx >= 0) {
-      const reducedSummary = clip(output[summaryIdx].content, 1200);
-      output[summaryIdx] = { ...output[summaryIdx], content: reducedSummary };
-      outputTokens = await countHistoryTokens(output, model);
-    }
+  let summaryContent = '';
+  if (typeof summarizeOlderHistory === 'function') {
+    summaryContent =
+      (await summarizeOlderHistory({
+        olderHistory: older,
+        recentHistory: tail,
+        model,
+        maxTokens: Number(opts.compactionSummaryMaxTokens) || DEFAULTS.compactionSummaryMaxTokens,
+        prompt: buildCompactionPrompt({ olderHistory: older, recentHistory: tail }),
+      })) || '';
   }
+
+  const normalizedSummary = summaryContent.trim();
+  if (!normalizedSummary) {
+    return {
+      history: rawHistory,
+      stats: {
+        rawMessages: rawHistory.length,
+        outputMessages: rawHistory.length,
+        rawTokens: rawTokenEstimate,
+        outputTokens: rawTokenEstimate,
+        savedTokens: 0,
+        savedPercent: 0,
+        turnCount,
+        estimatedPromptTokensRaw,
+        estimatedPromptTokensUsed: estimatedPromptTokensRaw,
+        summaryRefreshTurns: cadenceTurns,
+        messageWindowSize: opts.messageWindowSize,
+        compressionReason: getCompressionReason('summary-unavailable'),
+        compressed: false,
+        summaryInserted: false,
+      },
+    };
+  }
+
+  const summaryMessage = toSummaryMessage(normalizedSummary);
+  const output = [summaryMessage, ...tail];
+  const outputTokens = await countHistoryTokens(output, model);
+
+  if (outputTokens >= rawTokenEstimate) {
+    return {
+      history: rawHistory,
+      stats: {
+        rawMessages: rawHistory.length,
+        outputMessages: rawHistory.length,
+        rawTokens: rawTokenEstimate,
+        outputTokens: rawTokenEstimate,
+        savedTokens: 0,
+        savedPercent: 0,
+        turnCount,
+        estimatedPromptTokensRaw,
+        estimatedPromptTokensUsed: estimatedPromptTokensRaw,
+        summaryRefreshTurns: cadenceTurns,
+        messageWindowSize: opts.messageWindowSize,
+        compressionReason: getCompressionReason('no-token-savings'),
+        compressed: false,
+        summaryInserted: false,
+      },
+    };
+  }
+
+  const estimatedPromptTokensUsed =
+    outputTokens + Number(opts.estimatedSystemTokens || 0) + Number(opts.currentUserTokens || 0);
 
   return {
     history: output,
@@ -142,6 +217,17 @@ async function buildE2BHistory({ dbMessages, currentUserMessageId, model, config
       outputMessages: output.length,
       rawTokens: rawTokenEstimate,
       outputTokens,
+      savedTokens: Math.max(0, rawTokenEstimate - outputTokens),
+      savedPercent:
+        rawTokenEstimate > 0
+          ? Number((((rawTokenEstimate - outputTokens) / rawTokenEstimate) * 100).toFixed(2))
+          : 0,
+      turnCount,
+      estimatedPromptTokensRaw,
+      estimatedPromptTokensUsed,
+      summaryRefreshTurns: cadenceTurns,
+      messageWindowSize: opts.messageWindowSize,
+      compressionReason: getCompressionReason('cadence'),
       compressed: true,
       summaryInserted: true,
     },

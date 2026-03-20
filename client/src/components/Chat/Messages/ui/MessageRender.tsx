@@ -4,6 +4,7 @@ import { useRecoilValue } from 'recoil';
 import { type TMessage } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon } from '~/common';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
+import ContextCompressionCard from '~/components/Chat/Messages/ContextCompressionCard';
 import PlaceholderRow from '~/components/Chat/Messages/ui/PlaceholderRow';
 import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
@@ -14,6 +15,20 @@ import { MessageContext } from '~/Providers';
 import { useLocalize, useMessageActions } from '~/hooks';
 import { cn, getMessageAriaLabel, logger } from '~/utils';
 import store from '~/store';
+
+const labelCacheByMessageId = new Map<string, string>();
+
+function pushLabelDebug(message: string) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const key = '__E2BLabelDebugEvents__';
+  const target = window as unknown as Record<string, unknown>;
+  const list = Array.isArray(target[key]) ? (target[key] as Array<unknown>) : [];
+  list.push({ ts: Date.now(), message });
+  target[key] = list.slice(-200);
+}
 
 type MessageRenderProps = {
   message?: TMessage;
@@ -76,16 +91,45 @@ const MessageRender = memo(
     /** Only pass isSubmitting to the latest message to prevent unnecessary re-renders */
     const effectiveIsSubmitting = isLatestMessage ? isSubmitting : false;
 
+    const stableMessageLabel = useMemo(() => {
+      const id = msg?.messageId;
+      const current = (messageLabel ?? '').trim();
+
+      if (id && current.length > 0) {
+        if (current !== labelCacheByMessageId.get(id)) {
+          pushLabelDebug(`[E2B UI][LabelDebug] set-cache id=${id} label="${current}"`);
+        }
+        labelCacheByMessageId.set(id, current);
+        return current;
+      }
+
+      if (id) {
+        const cached = labelCacheByMessageId.get(id);
+        if (cached && cached.length > 0) {
+          pushLabelDebug(
+            `[E2B UI][LabelDebug] use-cache id=${id} cached="${cached}" raw="${messageLabel ?? ''}"`,
+          );
+          return cached;
+        }
+      }
+
+      const fallback = msg?.isCreatedByUser ? localize('com_user_message') : localize('com_ui_assistant');
+      pushLabelDebug(
+        `[E2B UI][LabelDebug] fallback id=${id ?? 'unknown'} isUser=${String(msg?.isCreatedByUser)} raw="${messageLabel ?? ''}" fallback="${fallback}"`,
+      );
+      return fallback;
+    }, [msg?.messageId, msg?.isCreatedByUser, messageLabel, localize]);
+
     const iconData: TMessageIcon = useMemo(
       () => ({
         endpoint: msg?.endpoint ?? conversation?.endpoint,
         model: msg?.model ?? conversation?.model,
         iconURL: msg?.iconURL,
-        modelLabel: messageLabel,
+        modelLabel: stableMessageLabel,
         isCreatedByUser: msg?.isCreatedByUser,
       }),
       [
-        messageLabel,
+        stableMessageLabel,
         conversation?.endpoint,
         conversation?.model,
         msg?.model,
@@ -165,34 +209,40 @@ const MessageRender = memo(
             msg.isCreatedByUser ? 'user-turn' : 'agent-turn',
           )}
         >
-          <h2 className={cn('select-none font-semibold', fontSize)}>{messageLabel}</h2>
+          <h2 className={cn('select-none font-semibold', fontSize)}>{stableMessageLabel}</h2>
 
           <div className="flex flex-col gap-1">
             <div className="flex max-w-full flex-grow flex-col gap-0">
-              <MessageContext.Provider
-                value={{
-                  messageId: msg.messageId,
-                  conversationId: conversation?.conversationId,
-                  isExpanded: false,
-                  isSubmitting: effectiveIsSubmitting,
-                  isLatestMessage,
-                }}
-              >
-                <MessageContent
-                  ask={ask}
-                  edit={edit}
-                  isLast={isLast}
-                  text={msg.text || ''}
-                  message={msg}
-                  enterEdit={enterEdit}
-                  error={!!(msg.error ?? false)}
-                  isSubmitting={effectiveIsSubmitting}
-                  unfinished={msg.unfinished ?? false}
-                  isCreatedByUser={msg.isCreatedByUser ?? true}
-                  siblingIdx={siblingIdx ?? 0}
-                  setSiblingIdx={setSiblingIdx ?? (() => ({}))}
-                />
-              </MessageContext.Provider>
+              <ContextCompressionCard
+                messageId={msg.messageId}
+                metrics={msg.e2bContextMetrics as any}
+              />
+              <div className="relative flex w-full flex-col">
+                <MessageContext.Provider
+                  value={{
+                    messageId: msg.messageId,
+                    conversationId: conversation?.conversationId,
+                    isExpanded: false,
+                    isSubmitting: effectiveIsSubmitting,
+                    isLatestMessage,
+                  }}
+                >
+                  <MessageContent
+                    ask={ask}
+                    edit={edit}
+                    isLast={isLast}
+                    text={msg.text || ''}
+                    message={msg}
+                    enterEdit={enterEdit}
+                    error={!!(msg.error ?? false)}
+                    isSubmitting={effectiveIsSubmitting}
+                    unfinished={msg.unfinished ?? false}
+                    isCreatedByUser={msg.isCreatedByUser ?? true}
+                    siblingIdx={siblingIdx ?? 0}
+                    setSiblingIdx={setSiblingIdx ?? (() => ({}))}
+                  />
+                </MessageContext.Provider>
+              </div>
             </div>
 
             {hasNoChildren && (isSubmittingFamily === true || effectiveIsSubmitting) ? (
