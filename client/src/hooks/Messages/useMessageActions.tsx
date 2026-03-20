@@ -2,7 +2,6 @@ import { useRecoilValue } from 'recoil';
 import { useCallback, useMemo, useState } from 'react';
 import { useUpdateFeedbackMutation } from 'librechat-data-provider/react-query';
 import {
-  isAssistantsEndpoint,
   isAgentsEndpoint,
   TUpdateFeedbackRequest,
   getTagByKey,
@@ -21,6 +20,18 @@ import useCopyToClipboard from './useCopyToClipboard';
 import { useAuthContext } from '~/hooks/AuthContext';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
+
+function pushLabelDebug(message: string) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const key = '__E2BLabelDebugEvents__';
+  const target = window as unknown as Record<string, unknown>;
+  const list = Array.isArray(target[key]) ? (target[key] as Array<unknown>) : [];
+  list.push({ ts: Date.now(), message });
+  target[key] = list.slice(-200);
+}
 
 export type TMessageActions = Pick<
   TMessageProps,
@@ -76,15 +87,15 @@ export default function useMessageActions(props: TMessageActions) {
   );
 
   const assistant = useMemo(() => {
-    if (!isAssistantsEndpoint(conversation?.endpoint)) {
+    const endpointKey = conversation?.endpoint ?? '';
+    const modelKey = message?.model ?? conversation?.model ?? '';
+
+    if (!endpointKey || !assistantMap?.[endpointKey]) {
       return undefined;
     }
 
-    const endpointKey = conversation?.endpoint ?? '';
-    const modelKey = message?.model ?? '';
-
-    return assistantMap?.[endpointKey] ? assistantMap[endpointKey][modelKey] : undefined;
-  }, [conversation?.endpoint, message?.model, assistantMap]);
+    return assistantMap[endpointKey][modelKey];
+  }, [conversation?.endpoint, conversation?.model, message?.model, assistantMap]);
 
   const agent = useMemo(() => {
     if (!isAgentsEndpoint(conversation?.endpoint)) {
@@ -122,15 +133,27 @@ export default function useMessageActions(props: TMessageActions) {
   const copyToClipboard = useCopyToClipboard({ text, content, searchResults });
 
   const messageLabel = useMemo(() => {
+    let resolvedLabel = '';
+
     if (message?.isCreatedByUser === true) {
-      return UsernameDisplay ? (user?.name ?? '') || user?.username : localize('com_user_message');
+      resolvedLabel =
+        UsernameDisplay ? (user?.name ?? '') || user?.username || '' : localize('com_user_message');
     } else if (agent) {
-      return agent.name ?? 'Assistant';
+      resolvedLabel = agent.name ?? 'Assistant';
     } else if (assistant) {
-      return assistant.name ?? 'Assistant';
+      resolvedLabel = assistant.name ?? 'Assistant';
     } else {
-      return message?.sender;
+      const sender = (message?.sender ?? '').trim();
+      resolvedLabel = sender.length > 0 ? sender : localize('com_ui_assistant');
     }
+
+    if ((resolvedLabel ?? '').trim().length === 0) {
+      pushLabelDebug(
+        `[E2B UI][LabelDebug] actions-empty id=${message?.messageId ?? 'unknown'} endpoint=${conversation?.endpoint ?? 'unknown'} model=${message?.model ?? 'unknown'} sender="${message?.sender ?? ''}" hasAssistant=${String(Boolean(assistant))} hasAgent=${String(Boolean(agent))}`,
+      );
+    }
+
+    return resolvedLabel;
   }, [message, agent, assistant, UsernameDisplay, user, localize]);
 
   const feedbackMutation = useUpdateFeedbackMutation(

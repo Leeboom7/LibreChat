@@ -14,6 +14,15 @@ import type {
 } from 'librechat-data-provider';
 import { addFileToCache } from '~/utils';
 
+const pickFirstNonEmptyString = (...values: Array<string | null | undefined>) => {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value;
+    }
+  }
+  return undefined;
+};
+
 type TUseContentHandler = {
   setMessages: (messages: TMessage[]) => void;
   getMessages: () => TMessage[] | undefined;
@@ -50,10 +59,17 @@ export default function useContentHandler({ setMessages, getMessages }: TUseCont
 
       let response = messageMap.get(messageId);
       if (!response) {
+        const sender = pickFirstNonEmptyString(existingResponse?.sender, initialResponse?.sender);
+        const model = pickFirstNonEmptyString(existingResponse?.model, initialResponse?.model);
+        const iconURL = pickFirstNonEmptyString(existingResponse?.iconURL, initialResponse?.iconURL);
+
         response = {
           ...(initialResponse as TMessage),
           ...(existingResponse ?? {}),
           ...(preservedMetrics != null ? { e2bContextMetrics: preservedMetrics } : {}),
+          ...(sender != null ? { sender } : {}),
+          ...(model != null ? { model } : {}),
+          ...(iconURL != null ? { iconURL } : {}),
           parentMessageId: userMessage?.messageId ?? '',
           conversationId,
           messageId,
@@ -65,6 +81,19 @@ export default function useContentHandler({ setMessages, getMessages }: TUseCont
           ...response,
           e2bContextMetrics: preservedMetrics,
         } as TMessage;
+        messageMap.set(messageId, response);
+      }
+
+      const sender = pickFirstNonEmptyString(response.sender, existingResponse?.sender, initialResponse?.sender);
+      const model = pickFirstNonEmptyString(response.model, existingResponse?.model, initialResponse?.model);
+      const iconURL = pickFirstNonEmptyString(response.iconURL, existingResponse?.iconURL, initialResponse?.iconURL);
+      if (sender !== response.sender || model !== response.model || iconURL !== response.iconURL) {
+        response = {
+          ...response,
+          ...(sender != null ? { sender } : {}),
+          ...(model != null ? { model } : {}),
+          ...(iconURL != null ? { iconURL } : {}),
+        };
         messageMap.set(messageId, response);
       }
 

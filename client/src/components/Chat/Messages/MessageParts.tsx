@@ -15,6 +15,20 @@ import SubRow from './SubRow';
 import { cn, getMessageAriaLabel } from '~/utils';
 import store from '~/store';
 
+const labelCacheByMessageId = new Map<string, string>();
+
+function pushLabelDebug(message: string) {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const key = '__E2BLabelDebugEvents__';
+  const target = window as unknown as Record<string, unknown>;
+  const list = Array.isArray(target[key]) ? (target[key] as Array<unknown>) : [];
+  list.push({ ts: Date.now(), message });
+  target[key] = list.slice(-200);
+}
+
 export default function Message(props: TMessageProps) {
   const localize = useLocalize();
   const { message, siblingIdx, siblingCount, setSiblingIdx, currentEditId, setCurrentEditId } =
@@ -51,10 +65,36 @@ export default function Message(props: TMessageProps) {
       result = assistant.name ?? localize('com_ui_assistant');
     } else if (agent) {
       result = agent.name ?? localize('com_ui_agent');
+    } else {
+      const sender = (message?.sender ?? '').trim();
+      result = sender.length > 0 ? sender : localize('com_ui_assistant');
     }
 
-    return result;
-  }, [assistant, agent, isCreatedByUser, localize]);
+    const safeResult = (result || '').trim();
+    if (messageId && safeResult.length > 0) {
+      if (safeResult !== labelCacheByMessageId.get(messageId)) {
+        pushLabelDebug(`[E2B UI][LabelDebug] parts-set-cache id=${messageId} label="${safeResult}"`);
+      }
+      labelCacheByMessageId.set(messageId, safeResult);
+      return safeResult;
+    }
+
+    if (messageId) {
+      const cached = labelCacheByMessageId.get(messageId);
+      if (cached && cached.length > 0) {
+        pushLabelDebug(
+          `[E2B UI][LabelDebug] parts-use-cache id=${messageId} cached="${cached}" raw="${result ?? ''}"`,
+        );
+        return cached;
+      }
+    }
+
+    const fallback = isCreatedByUser ? localize('com_user_message') : localize('com_ui_assistant');
+    pushLabelDebug(
+      `[E2B UI][LabelDebug] parts-fallback id=${messageId ?? 'unknown'} isUser=${String(isCreatedByUser)} raw="${result ?? ''}" fallback="${fallback}"`,
+    );
+    return fallback;
+  }, [assistant, agent, isCreatedByUser, localize, message?.sender, messageId]);
 
   const iconData: TMessageIcon = useMemo(
     () => ({

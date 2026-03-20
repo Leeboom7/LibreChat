@@ -43,6 +43,15 @@ import { MESSAGE_UPDATE_INTERVAL } from '~/common';
 import { useLiveAnnouncer } from '~/Providers';
 import store from '~/store';
 
+const pickFirstNonEmptyString = (...values: Array<string | null | undefined>) => {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value;
+    }
+  }
+  return undefined;
+};
+
 type TSyncData = {
   sync: boolean;
   thread_id: string;
@@ -288,14 +297,37 @@ export default function useEventHandlers({
       const { conversationId, thread_id, responseMessage, requestMessage } = data;
       const { initialResponse, messages: _messages, userMessage } = submission;
       const messages = _messages.filter((msg) => msg.messageId !== userMessage.messageId);
+      const currentMessages = getMessages() ?? [];
+      const existingResponse = currentMessages.find(
+        (msg) =>
+          msg.messageId === responseMessage?.messageId ||
+          msg.messageId === initialResponse?.messageId,
+      );
+
+      const mergedResponse = {
+        ...initialResponse,
+        ...responseMessage,
+        sender: pickFirstNonEmptyString(
+          responseMessage?.sender,
+          existingResponse?.sender,
+          initialResponse?.sender,
+        ),
+        model: pickFirstNonEmptyString(
+          responseMessage?.model,
+          existingResponse?.model,
+          initialResponse?.model,
+        ),
+        iconURL: pickFirstNonEmptyString(
+          responseMessage?.iconURL,
+          existingResponse?.iconURL,
+          initialResponse?.iconURL,
+        ),
+      } as TMessage;
 
       setMessages([
         ...messages,
         requestMessage,
-        {
-          ...initialResponse,
-          ...responseMessage,
-        },
+        mergedResponse,
       ]);
 
       announcePolite({
