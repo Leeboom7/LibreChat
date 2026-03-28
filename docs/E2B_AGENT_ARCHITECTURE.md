@@ -19,7 +19,7 @@
 
 ### 1.2 技术栈
 - **后端**: Node.js + Express.js
-- **LLM**: OpenAI ChatGPT 4o
+- **LLM**: OpenAI Chat Completions（支持 OpenAI/Azure OpenAI，默认回退 gpt-4o）
 - **沙箱**: E2B Cloud Sandbox
 - **数据库**: MongoDB
 - **存储**: Local/S3/Azure Blob
@@ -27,29 +27,29 @@
 ### 1.3 代码统计
 ```
 Git 统计:
-- 提交数: 61 个（相对于 upstream/main）
-- 文件变更: 79 files changed, 10515 insertions(+), 145 deletions(-)
-- 新增文件: 33 个核心文件
+- 提交数: 83 个（相对于 upstream/main）
+- 文件变更: 139 files changed, 17842 insertions(+), 204 deletions(-)
+- 新增文件: 49 个
 
 核心模块代码量:
-- Controller:        852 行 (api/server/routes/e2bAssistants/controller.js)
-- E2BAgent:          871 行 (api/server/services/Agents/e2bAgent/index.js)
-- Context Manager:   387 行 (api/server/services/Agents/e2bAgent/contextManager.js)
-- Tools:             353 行 (api/server/services/Agents/e2bAgent/tools.js)
-- System Prompts:    214 行 (api/server/services/Agents/e2bAgent/prompts.js) - 已优化精简
-- Sandbox Manager:   748 行 (api/server/services/Endpoints/e2bAssistants/initialize.js)
+- Controller:        1029 行 (api/server/routes/e2bAssistants/controller.js)
+- E2BAgent:          902 行 (api/server/services/Agents/e2bAgent/index.js)
+- Context Manager:   368 行 (api/server/services/Agents/e2bAgent/contextManager.js)
+- Tools:             476 行 (api/server/services/Agents/e2bAgent/tools.js)
+- System Prompts:    280 行 (api/server/services/Agents/e2bAgent/prompts.js)
+- Sandbox Manager:   919 行 (api/server/services/Endpoints/e2bAssistants/initialize.js)
 - Code Executor:     206 行 (api/server/services/Sandbox/codeExecutor.js)
 - File Handler:      172 行 (api/server/services/Sandbox/fileHandler.js)
 
 代码分类汇总:
-- 后端核心逻辑:  ~3,800 行
+- 后端核心逻辑:  ~4,352 行
 - 前端组件:       ~400 行
 - 测试代码:       ~808 行
 - 文档:           ~6,500 行
 - E2B 模板:       ~85 行
 - TypeScript Schema: ~86 行
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-总计新增代码:     ~11,679 行
+总计新增代码:     ~17,842 行（相对 upstream/main）
 ```
 
 ---
@@ -72,7 +72,7 @@ Git 统计:
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────┐
-│               Controller (619 行)                            │
+│               Controller (1029 行)                           │
 │    api/server/routes/e2bAssistants/controller.js            │
 │                                                              │
 │  职责:                                                       │
@@ -84,7 +84,7 @@ Git 统计:
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                  E2BAgent 核心 (446 行)                      │
+│                  E2BAgent 核心 (902 行)                      │
 │    api/server/services/Agents/e2bAgent/index.js             │
 │                                                              │
 │  ┌────────────────────────────────────────────────┐         │
@@ -98,19 +98,19 @@ Git 统计:
 │  └────────────────────────────────────────────────┘         │
 │                                                              │
 │  依赖组件:                                                   │
-│  - Context Manager (387 行) - 状态管理                      │
-│  - System Prompts (154 行) - 提示词生成                     │
-│  - Tools (266 行) - 工具执行                                │
+│  - Context Manager (368 行) - 状态管理                      │
+│  - System Prompts (280 行) - 提示词生成                     │
+│  - Tools (476 行) - 工具执行                                │
 └──────────┬──────────────────────┬──────────────────────────┘
            │                      │
            ▼                      ▼
-┌──────────────────┐    ┌─────────────────────────────────┐
-│  OpenAI API   │    │   E2B Sandbox Manager (748 行)  │
+┌──────────────────────────┐    ┌─────────────────────────────────┐
+│  OpenAI Chat Completions │    │   E2B Sandbox Manager (919 行)  │
 │                  │    │   initialize.js                 │
-│ - ChatGPT 4o     │    │                                 │
+│ - OpenAI / Azure  │    │                                 │
 │ - Tool calling   │    │ 职责:                           │
 │ - Streaming      │    │ - 沙箱创建/复用/销毁            │
-└──────────────────┘    │ - 文件上传/下载/列表            │
+└──────────────────────────┘    │ - 文件上传/下载/列表            │
                         │ - 代码执行接口                  │
                         └────────┬────────────────────────┘
                                  │
@@ -163,7 +163,7 @@ Controller: 保存消息到数据库
 
 ## 3. 核心模块详解
 
-### 3.1 E2BAgent (index.js - 446 行)
+### 3.1 E2BAgent (index.js - 902 行)
 
 **文件位置**: `api/server/services/Agents/e2bAgent/index.js`
 
@@ -180,8 +180,8 @@ class E2BDataAnalystAgent {
     this.userId               // 用户 ID
     this.conversationId       // 对话 ID
     this.assistantId          // 助手 ID
-    this.llmProvider          // Anthropic Claude 实例
-    this.tools                // 可用工具 [execute_code, upload_file]
+    this.openai               // OpenAI/Azure OpenAI 客户端
+    this.tools                // 可用工具 [execute_code, list_files, upload_file, export_file, complete_task]
     this.sandbox              // E2B 沙箱实例
     this.contextManager       // Context Manager 实例
     this.maxIterations = 20   // 最大迭代次数
@@ -223,7 +223,7 @@ class E2BDataAnalystAgent {
 
 流式模式 (第 189-279 行):
   while (iteration <= this.maxIterations) {
-    const response = await llmProvider.createMessage({
+    const response = await this.openai.chat.completions.create({
       messages,
       tools,
       stream: true
@@ -279,7 +279,7 @@ const sandbox = await e2bClientManager.getSandbox(userId, conversationId);
 await e2bClientManager.killSandbox(userId, conversationId);
 
 // → LLM Provider
-const response = await this.llmProvider.createMessage({
+    const response = await this.openai.chat.completions.create({
   messages,
   tools: this.tools,
   stream: true
@@ -403,7 +403,7 @@ Tier 2 - 通用调试 (第 320-345 行):
 
 ---
 
-### 3.3 Tools (tools.js - 266 行)
+### 3.3 Tools (tools.js - 476 行)
 
 **文件位置**: `api/server/services/Agents/e2bAgent/tools.js`
 
@@ -416,10 +416,12 @@ Tier 2 - 通用调试 (第 320-345 行):
 
 #### 可用工具列表
 
-工具总数: **3 个**
+工具总数: **5 个**
 1. `execute_code` - 执行 Python 代码
-2. `upload_file` - 上传文件到沙箱
-3. `complete_task` - 智能任务完成（2026-01-19 新增）
+2. `list_files` - 列出沙箱文件
+3. `upload_file` - 上传文件到沙箱
+4. `export_file` - 导出沙箱文件并返回下载链接
+5. `complete_task` - 智能任务完成（2026-01-19 新增）
 
 **execute_code** (第 29-220 行)
 
@@ -553,20 +555,20 @@ Iteration N: 最后一步解释 + complete_task(summary="所有步骤完成...")
 
 ---
 
-### 3.4 System Prompts (prompts.js - 214 行) ⭐ 已优化
+### 3.4 System Prompts (prompts.js - 280 行) ⭐ 已优化
 
 **文件位置**: `api/server/services/Agents/e2bAgent/prompts.js`
 
 #### 职责
 - 定义 Agent 的行为规范
-- 说明工具使用方法（3 个工具：execute_code, upload_file, complete_task）
+- 说明工具使用方法（5 个工具：execute_code, list_files, upload_file, export_file, complete_task）
 - 提供可视化和错误处理指导
 
-#### 优化历史 (2026-02-09)
+#### 优化历史 (2026-02-09 + 2026-03)
 - 删除 `Multi-Scenario Adaptation Rules` 章节（~50 行冗余示例代码）
 - 删除 `Common Error Patterns` 章节（~15 行硬编码错误类型）
 - 删除数据库连接、XGBoost 等冗余示例代码（~40 行）
-- 从 233 行精简至 214 行（减少 ~8%）
+- 在 2026-03 扩展后当前为 280 行（新增 export_file/download 流程与更完整约束）
 - **哲学转变**: 从 "详尽示例驱动" → "简洁原则驱动"
 
 #### 核心章节
@@ -582,8 +584,9 @@ You are a Professional Data Analyst Agent specialized in end-to-end Python data 
 ```
 4. **Tool Calling Format**:
    - execute_code(code): 执行完整可运行代码
-   - upload_file(filename, content): 保存生成的文件
    - list_files(path): 检查沙箱中的文件
+  - upload_file(filename, content): 上传文件到沙箱
+  - export_file(path): 导出文件并返回下载链接
    - complete_task(summary): 所有步骤完成后调用（必需）✨
 ```
 
@@ -617,7 +620,7 @@ You are a Professional Data Analyst Agent specialized in end-to-end Python data 
 
 ---
 
-### 3.5 E2B Sandbox Manager (initialize.js - 748 行)
+### 3.5 E2B Sandbox Manager (initialize.js - 919 行)
 
 **文件位置**: `api/server/services/Endpoints/e2bAssistants/initialize.js`
 
@@ -669,7 +672,7 @@ return await this.createSandbox(userId, conversationId);
 
 ---
 
-### 3.6 Code Executor (codeExecutor.js - 163 行)
+### 3.6 Code Executor (codeExecutor.js - 206 行)
 
 **文件位置**: `api/server/services/Sandbox/codeExecutor.js`
 
@@ -898,9 +901,11 @@ res.write(`event: message\ndata: ${JSON.stringify({
 │    │    [system, ...history, user]            │       │
 │    │                                          │       │
 │    │ b. LLM 调用                              │       │
-│    │    llmProvider.createMessage({           │       │
+│    │    openai.chat.completions.create({      │       │
 │    │      messages,                           │       │
-│    │      tools: [execute_code, upload_file], │       │
+│    │      tools: [execute_code, list_files,   │       │
+│    │              upload_file, export_file,   │       │
+│    │              complete_task],              │       │
 │    │      stream: true                        │       │
 │    │    })                                    │       │
 │    │                                          │       │
@@ -940,8 +945,9 @@ res.write(`event: message\ndata: ${JSON.stringify({
                      ▼
 ┌────────────────────────────────────────────────────────┐
 │ 8. Controller: SSE 流式返回                            │
-│    - 'created' 事件 (用户消息)                         │
-│    - 'content' 事件 (逐 token)                         │
+│    - 'sync' 事件 (request/response 同步)               │
+│    - 'text/content' 事件 (逐 token)                    │
+│    - 'on_context_metrics' 事件 (压缩指标)              │
 │    - 'final' 事件 (完整响应)                           │
 └────────────────────┬───────────────────────────────────┘
                      │
@@ -1092,14 +1098,14 @@ res.write(`event: message\ndata: ${JSON.stringify({
 ### 6.2 核心模块总览
 
 ```
-Controller (852 行) ⭐ 已优化
-  ├─> E2BAgent (871 行) ⭐ 已优化
-  │    ├─> Context Manager (387 行)
-  │    ├─> System Prompts (214 行) ⭐ 精简 -8%
-  │    └─> Tools (353 行) ⭐ 新增 complete_task
+Controller (1029 行) ⭐ 已优化
+  ├─> E2BAgent (902 行) ⭐ 已优化
+  │    ├─> Context Manager (368 行)
+  │    ├─> System Prompts (280 行)
+  │    └─> Tools (476 行) ⭐ 含 execute/list/upload/export/complete
   │         ├─> Code Executor (206 行)
   │         └─> File Handler (172 行)
-  └─> E2B Sandbox Manager (748 行)
+  └─> E2B Sandbox Manager (919 行)
 ```
 
 ### 6.3 数据流总结
@@ -1118,6 +1124,18 @@ Controller (852 行) ⭐ 已优化
                           最终响应
 ```
 
+### 6.4 2026-03 收口更新
+
+✅ **上下文压缩链路闭环（2026-03-20）**
+- 后端压缩判定收紧：仅 `outputTokens < rawTokens` 记为压缩成功。
+- 运行时摘要注入顺序确认：`system -> summary/history -> user`。
+- 前端压缩卡片在流式与完成态保持稳定。
+
+✅ **流式显示稳定性收口（2026-03-24）**
+- 助手名稳定：SSE 非空优先合并 + 渲染层 `messageId` 缓存，解决“出现后消失”。
+- Loading Dot 稳定：统一到单一路径 `result-streaming`，消除双 dot 重叠、闪断和形状切换。
+- 运行态一致：完成容器重建并核验修复代码已进入镜像。
+
 ---
 
 ## 附录：完整文件清单
@@ -1127,17 +1145,17 @@ Controller (852 行) ⭐ 已优化
 #### 后端服务层 (13个)
 ```
 api/models/E2BAssistant.js                                       89 行
-api/server/services/Agents/e2bAgent/index.js                    687 行
-api/server/services/Agents/e2bAgent/contextManager.js           387 行
-api/server/services/Agents/e2bAgent/prompts.js                  233 行
-api/server/services/Agents/e2bAgent/tools.js                    266 行
+api/server/services/Agents/e2bAgent/index.js                    902 行
+api/server/services/Agents/e2bAgent/contextManager.js           368 行
+api/server/services/Agents/e2bAgent/prompts.js                  280 行
+api/server/services/Agents/e2bAgent/tools.js                    476 行
 api/server/services/Endpoints/e2bAssistants/index.js             64 行
-api/server/services/Endpoints/e2bAssistants/initialize.js       748 行
+api/server/services/Endpoints/e2bAssistants/initialize.js       919 行
 api/server/services/Endpoints/e2bAssistants/buildOptions.js     107 行
 api/server/services/Sandbox/codeExecutor.js                     206 行
 api/server/services/Sandbox/fileHandler.js                      172 行
 api/server/routes/e2bAssistants/index.js                         32 行
-api/server/routes/e2bAssistants/controller.js                   733 行
+api/server/routes/e2bAssistants/controller.js                  1029 行
 ```
 
 #### 前端组件 (修改现有文件 + 新增类型)
@@ -1189,27 +1207,29 @@ CONTEXT_MANAGER_DESIGN.md                                       234 行
 ```bash
 # 提交统计
 $ git log --oneline upstream/main..HEAD | wc -l
-56
+83
 
 # 变更统计
 $ git diff --stat upstream/main..HEAD
-79 files changed, 10515 insertions(+), 43 deletions(-)
+139 files changed, 17842 insertions(+), 204 deletions(-)
 
 # 新增文件
 $ git diff --name-status upstream/main..HEAD | grep "^A" | wc -l
-33
+49
 ```
 
 ---
 
-**文档版本**: v2.3  
-**最后更新**: 2026-02-09  
+**文档版本**: v2.5  
+**最后更新**: 2026-03-28  
 **维护者**: Li Ruisen  
 **最新变更**: 
-- 添加 complete_task 智能任务完成机制说明
-- 更新 Controller contentParts 稀疏数组修复
-- 更新 System Prompt 优化（精简 ~8%）
-- 更新代码统计和行数
+- 按代码实况校正核心模块行数与 Git 统计
+- 更新 LLM 调用路径说明（OpenAI/Azure OpenAI Chat Completions）
+- 更新工具集合（execute/list/upload/export/complete）与 SSE 事件链路
+- 新增 2026-03 上下文压缩闭环收口说明
+- 新增 2026-03 流式显示稳定性收口（助手名 + Loading Dot）
+- 补充运行态一致性验证（容器重建后代码核验）
 **相关文档**: 
 - [问题解决文档](./E2B_AGENT_FIXES.md)
 - [开发文档](./E2B_DATA_ANALYST_AGENT_DEVELOPMENT.md)

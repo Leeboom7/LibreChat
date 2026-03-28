@@ -3,6 +3,49 @@
 > 记录 E2B Data Analyst Agent 的每日开发进展、问题解决和关键决策。
 
 
+## 2026-03-24 (周二)
+
+### ✅ 流式显示稳定性最终收口（助手名 + Loading Dot）
+**Git Commits**:
+- `5b4d74392` - fix(e2b): keep assistant label stable during streaming
+- `56e239a45` - fix(ui): stabilize streaming loading dot without overlap
+
+### 主要工作
+1. **助手名流式消失问题修复收口** ⭐⭐⭐
+   - 在 SSE `sync/content` 关键路径增加 identity 字段“非空优先合并”，避免 `sender/model/iconURL` 被空值覆盖。
+   - 在消息渲染层增加 `messageId` 级 label cache，避免流式帧短暂缺字段导致标题抖动或回退。
+   - 强化 assistant 映射回退逻辑，降低 endpoint/model 临时不一致导致的名称丢失。
+
+2. **Loading Dot 闪断与形状切换修复** ⭐⭐⭐
+   - 统一流式光标来源到 `result-streaming`，避免 `result-thinking` 与 `result-streaming` 双路径并存。
+   - 增加“空文本流式锚点”策略，使首 token 前后都走同一渲染路径，消除“先消失再出现”。
+   - 移除 `Markdown` 初始化阶段 dot 渲染，解决双 dot 重叠与形状变化。
+
+3. **容器构建与运行态一致性验证** ⭐⭐
+   - 发现并确认“容器源码已更新但 dist 产物过旧”的现象。
+   - 完成 `docker compose build api && docker compose up -d api` 重建发布。
+   - 在容器内核验关键修复代码已进入运行镜像。
+
+### 验证结果
+- ✅ 助手名称在流式开始至完成阶段保持稳定，不再“出现后消失”。
+- ✅ Loading Dot 全程单点显示，无闪断、无重叠、无形状切换。
+- ✅ 修复代码已推送远端，分支 `feature/integration` 与本地一致。
+
+### 技术细节
+**涉及文件（核心）**:
+1. `client/src/hooks/SSE/useEventHandlers.ts`
+2. `client/src/hooks/SSE/useContentHandler.ts`
+3. `client/src/hooks/Messages/useMessageActions.tsx`
+4. `client/src/hooks/Messages/useMessageHelpers.tsx`
+5. `client/src/components/Chat/Messages/ui/MessageRender.tsx`
+6. `client/src/components/Chat/Messages/MessageParts.tsx`
+7. `client/src/components/Chat/Messages/Content/Parts/Text.tsx`
+8. `client/src/components/Chat/Messages/Content/MessageContent.tsx`
+9. `client/src/components/Chat/Messages/Content/Markdown.tsx`
+
+---
+
+
 ## 2026-03-20 (周五)
 
 ### ✅ 上下文压缩前后端闭环收口
