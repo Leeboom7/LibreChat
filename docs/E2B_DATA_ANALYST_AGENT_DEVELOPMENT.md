@@ -108,14 +108,14 @@ LibreChat/
 │   │   ├── services/
 │   │   │   ├── Agents/
 │   │   │   │   └── e2bAgent/
-│   │   │   │       ├── index.js           # [已实现] 870行 - ReAct循环Agent核心
-│   │   │   │       ├── contextManager.js  # [已实现] 314行 - 上下文管理器 
-│   │   │   │       ├── prompts.js         # [已实现] 213行 - 系统提示词
-│   │   │   │       └── tools.js           # [已实现] 352行 - 工具定义与执行
+│   │   │   │       ├── index.js           # [已实现] 902行 - ReAct循环Agent核心
+│   │   │   │       ├── contextManager.js  # [已实现] 368行 - 上下文管理器 
+│   │   │   │       ├── prompts.js         # [已实现] 280行 - 系统提示词
+│   │   │   │       └── tools.js           # [已实现] 476行 - 工具定义与执行
 │   │   │   ├── Endpoints/
 │   │   │   │   └── e2bAssistants/
 │   │   │   │       ├── index.js           # [已实现] 端点入口
-│   │   │   │       ├── initialize.js      # [已实现] 910行 - E2B沙箱生命周期管理
+│   │   │   │       ├── initialize.js      # [已实现] 919行 - E2B沙箱生命周期管理
 │   │   │   │       └── buildOptions.js    # [已实现] 选项构建
 │   │   │   ├── Sandbox/
 │   │   │   │   ├── codeExecutor.js        # [已实现] 206行 - Python代码执行
@@ -123,7 +123,7 @@ LibreChat/
 │   │   └── routes/
 │   │       └── e2bAssistants/
 │   │           ├── index.js               # [已实现] 路由注册
-│   │           └── controller.js          # [已实现] 851行 - HTTP/SSE控制器
+│   │           └── controller.js          # [已实现] 1029行 - HTTP/SSE控制器
 │   └── tests/
 │       └── e2b/
 │           ├── codeExecutor.test.js       # [已实现] CodeExecutor单元测试
@@ -152,7 +152,7 @@ LibreChat/
 
 ### 5.1 Context Manager (`contextManager.js`) 
 - **功能**: 上下文管理的 Single Source of Truth
-- **代码**: 314 行
+- **代码**: 368 行
 - **职责**:
   - **会话状态管理**: 追踪已上传文件和生成的工件（图表、CSV等）
   - **上下文生成**: 为 LLM 生成结构化上下文（文件列表、工件信息）
@@ -165,7 +165,7 @@ LibreChat/
 
 ### 5.2 E2BDataAnalystAgent (`index.js`)
 - **功能**: 基于 ReAct 循环的智能代理核心
-- **代码**: 870 行
+- **代码**: 902 行
 - **LLM**: 使用 **OpenAI API**（GPT-4/GPT-4o/GPT-5-mini）
 - **特性**:
   - **ReAct 循环**: Plan → Execute → Observe，最多 20 次迭代
@@ -173,13 +173,13 @@ LibreChat/
   - **三源文件收集**: 从消息附件 + tool_resources + root file_ids 收集文件
   - **自愈能力**: 完整 traceback 传递给 LLM，自动分析并修复错误
   - **智能终止**: 检测 `complete_task` 工具调用，明确任务完成信号
-  - **工具调用**: `execute_code`, `list_files`, `complete_task`
+  - **工具调用**: `execute_code`, `list_files`, `upload_file`, `export_file`, `complete_task`
   - **流式输出**: SSE 逐 token 返回 + Azure Assistant 风格的 Content 数组
   - **执行时间追踪**: 记录代码执行开始时间和总耗时
 
 ### 5.3 E2B Sandbox Manager (`initialize.js`)
 - **功能**: 管理 E2B 沙箱生命周期（创建、销毁、复用）
-- **代码**: 910 行
+- **代码**: 919 行
 - **SDK 适配**: 适配 `@e2b/code-interpreter` v2.8.4+
 - **关键特性**:
   - **沙箱池管理**: 使用 Map 存储 userId+conversationId → sandbox 映射
@@ -191,18 +191,21 @@ LibreChat/
 
 ### 5.4 Tools (`tools.js`)
 - **功能**: 工具定义与执行逻辑
-- **代码**: 352 行
+- **代码**: 476 行
 - **工具列表**:
   1. **`execute_code`**: 执行 Python 代码，自动捕获图表和输出
      - 完整错误信息传递（error_type, error_message, traceback）
      - 图表自动保存到系统存储并返回 Web 路径
   2. **`list_files`**: 列出沙箱中的文件（用于文件检查）
-  3. **`complete_task`**: 标记任务完成，接受 summary 参数
+  3. **`upload_file`**: 将指定 `file_id` 的文件同步到沙箱
+  4. **`export_file`**: 将沙箱文件持久化并返回下载链接
+  5. **`complete_task`**: 标记任务完成，接受 summary 参数
      - LLM 主动声明完成，trigger 循环终止
 - **关键特性**:
   - **统一观察格式**: 成功/失败都返回结构化 JSON
   - **完整错误链**: errorName + error + traceback 完整传递给 LLM
   - **Context Manager 集成**: 自动更新工件追踪
+  - **导出能力**: `export_file` 返回可直接给用户的下载链接 markdown
 
 ### 5.5 CodeExecutor (`codeExecutor.js`)
 - **功能**: 在 E2B 沙箱中执行 Python 代码并处理结果
@@ -228,7 +231,7 @@ LibreChat/
 
 ### 5.7 Controller (`controller.js`)
 - **功能**: HTTP/SSE 请求处理与响应流管理
-- **代码**: 851 行
+- **代码**: 1029 行
 - **特性**:
   - **SSE 流式传输**: Azure Assistant 风格的 Content 数组（TEXT + TOOL_CALL）
   - **contentParts 初始化**: 使用零宽空格占位符防止稀疏数组错误
@@ -426,9 +429,14 @@ LibreChat/
 - **流式响应**: 当前已实现基础流式（逐 token 输出），可进一步优化性能
 - **错误重试**: 增强 LLM 工具调用失败的重试机制
 - **Token 优化**: 减少系统提示词和工具定义的 Token 消耗
-- **访问控制**: 实现私有/公共助手权限管理（待协作人员完成）
+- **访问控制**: 目前已有基础可见性控制（author/group/admin/visibleTo）；统一 ACL 与细粒度动作权限仍需增强
 - **模型切换**: 支持前端动态选择 OpenAI / Azure OpenAI / 其他兼容 API
 - **Prompt 微调**: 针对不同模型（GPT-4o, gpt-5-mini）优化 system prompt
+
+### 9.5 代码实况说明 (2026-03-28)
+- `complete_task` 的终止策略当前以检测 tool_calls 为主，不强制要求先执行 `execute_code` 才可完成。
+- 工具定义与实现存在参数契约差异：`prompts.js` 中 `upload_file` 定义为 `filename/content`，而 `tools.js` 实际实现接收 `file_id`。
+- 权限控制当前由 `controller.js` 内部 `canAccessAssistant` 执行基础校验，尚未接入统一 ACL 服务链。
 
 ---
 
@@ -656,12 +664,14 @@ LibreChat/
 ---
 
 **创建日期**: 2025-12-23  
-**最后更新**: 2026-02-09  
+**最后更新**: 2026-03-28  
 **当前状态**: ✅ 核心功能完成！
 - Azure OpenAI 集成完成
 - System Prompt 优化完成（精简 ~8%）
 - complete_task 智能任务完成机制正常工作
 - contentParts 稀疏数组问题已修复
+- 上下文压缩闭环已收口（后端判定 + 前端卡片稳定）
+- 流式稳定性已收口（助手名稳定 + Loading Dot 单路径）
 - 助手配置、历史对话、图像显示、沙箱复用、实时流式响应、错误自愈、Azure 风格输出均已正常工作
   
-**当前分支**: `feature/e2b-integration`
+**当前分支**: `feature/integration`
